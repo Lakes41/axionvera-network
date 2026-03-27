@@ -1,0 +1,298 @@
+syntax = "proto3";
+
+package axionvera.gateway;
+
+import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+
+// Gateway service for JSON-RPC/REST interface
+service GatewayService {
+  // Contract interaction endpoints with HTTP annotations
+  rpc Deposit(DepositRequest) returns (TransactionResponse) {
+    option (google.api.http) = {
+      post: "/v1/contract/deposit"
+      body: "*"
+    };
+  }
+
+  rpc Withdraw(WithdrawRequest) returns (TransactionResponse) {
+    option (google.api.http) = {
+      post: "/v1/contract/withdraw"
+      body: "*"
+    };
+  }
+
+  rpc DistributeRewards(DistributeRewardsRequest) returns (TransactionResponse) {
+    option (google.api.http) = {
+      post: "/v1/contract/distribute-rewards"
+      body: "*"
+    };
+  }
+
+  rpc ClaimRewards(ClaimRewardsRequest) returns (TransactionResponse) {
+    option (google.api.http) = {
+      post: "/v1/contract/claim-rewards"
+      body: "*"
+    };
+  }
+
+  // Query endpoints with HTTP annotations
+  rpc GetBalance(BalanceRequest) returns (BalanceResponse) {
+    option (google.api.http) = {
+      get: "/v1/query/balance"
+    };
+  }
+
+  rpc GetRewards(RewardsRequest) returns (RewardsResponse) {
+    option (google.api.http) = {
+      get: "/v1/query/rewards"
+    };
+  }
+
+  rpc GetContractState(ContractStateRequest) returns (ContractStateResponse) {
+    option (google.api.http) = {
+      get: "/v1/query/contract-state"
+    };
+  }
+
+  rpc GetTransaction(TransactionRequest) returns (TransactionResponse) {
+    option (google.api.http) = {
+      get: "/v1/transaction/{transaction_hash}"
+    };
+  }
+
+  rpc GetTransactionHistory(TransactionHistoryRequest) returns (TransactionHistoryResponse) {
+    option (google.api.http) = {
+      get: "/v1/transaction/history"
+    };
+  }
+
+  // Network status endpoints with HTTP annotations
+  rpc GetNetworkStatus(google.protobuf.Empty) returns (NetworkStatusResponse) {
+    option (google.api.http) = {
+      get: "/v1/network/status"
+    };
+  }
+
+  rpc GetNodeInfo(NodeInfoRequest) returns (NodeInfoResponse) {
+    option (google.api.http) = {
+      get: "/v1/node/info"
+    };
+  }
+
+  // Health check endpoints with HTTP annotations
+  rpc CheckHealth(google.protobuf.Empty) returns (HealthCheckResponse) {
+    option (google.api.http) = {
+      get: "/v1/health"
+    };
+  }
+
+  rpc WatchHealth(google.protobuf.Empty) returns (stream HealthCheckResponse) {
+    option (google.api.http) = {
+      get: "/v1/health/watch"
+    };
+  }
+}
+
+// Request/Response types (reused from network.proto but with gateway-specific additions)
+
+message DepositRequest {
+  string user_address = 1;
+  string token_address = 2;
+  string amount = 3;
+  bytes signature = 4;
+  uint64 nonce = 5;
+  google.protobuf.Timestamp timestamp = 6;
+  // Gateway-specific fields
+  string request_id = 7; // For request tracking
+  string callback_url = 8; // For async responses
+}
+
+message WithdrawRequest {
+  string user_address = 1;
+  string token_address = 2;
+  string amount = 3;
+  bytes signature = 4;
+  uint64 nonce = 5;
+  google.protobuf.Timestamp timestamp = 6;
+  // Gateway-specific fields
+  string request_id = 7;
+  string callback_url = 8;
+}
+
+message DistributeRewardsRequest {
+  string reward_token = 1;
+  string total_amount = 2;
+  bytes signature = 3;
+  uint64 nonce = 4;
+  google.protobuf.Timestamp timestamp = 5;
+  // Gateway-specific fields
+  string request_id = 6;
+  string callback_url = 7;
+}
+
+message ClaimRewardsRequest {
+  string user_address = 1;
+  bytes signature = 2;
+  uint64 nonce = 3;
+  google.protobuf.Timestamp timestamp = 4;
+  // Gateway-specific fields
+  string request_id = 5;
+  string callback_url = 6;
+}
+
+message TransactionResponse {
+  bool success = 1;
+  string transaction_hash = 2;
+  string error_message = 3;
+  uint64 gas_used = 4;
+  google.protobuf.Timestamp timestamp = 5;
+  map<string, string> events = 6;
+  // Gateway-specific fields
+  string request_id = 7;
+  uint64 processing_time_ms = 8;
+  string status_url = 9; // URL to check transaction status
+}
+
+message BalanceRequest {
+  string user_address = 1;
+  string token_address = 2;
+}
+
+message BalanceResponse {
+  string user_address = 1;
+  string token_address = 2;
+  string balance = 3;
+  string reward_index = 4;
+  string pending_rewards = 5;
+  // Gateway-specific fields
+  google.protobuf.Timestamp last_updated = 6;
+  string currency = 7; // ISO 4217 currency code
+}
+
+message RewardsRequest {
+  string user_address = 1;
+}
+
+message RewardsResponse {
+  string user_address = 1;
+  string total_rewards = 2;
+  string claimable_rewards = 3;
+  string user_reward_index = 4;
+  string global_reward_index = 5;
+  // Gateway-specific fields
+  google.protobuf.Timestamp last_claimed = 6;
+  string reward_token = 7;
+}
+
+message ContractStateRequest {
+  string contract_address = 1;
+}
+
+message ContractStateResponse {
+  string contract_address = 1;
+  string total_deposits = 2;
+  string reward_index = 3;
+  uint64 total_users = 4;
+  google.protobuf.Timestamp last_updated = 5;
+  map<string, string> custom_state = 6;
+  // Gateway-specific fields
+  string contract_version = 7;
+  repeated string supported_tokens = 8;
+}
+
+message NetworkStatusResponse {
+  bool is_healthy = 1;
+  uint64 block_height = 2;
+  uint64 connected_peers = 3;
+  double network_hash_rate = 4;
+  google.protobuf.Timestamp last_block_time = 5;
+  string network_version = 6;
+  // Gateway-specific fields
+  uint64 pending_transactions = 7;
+  double average_block_time = 8;
+  repeated string supported_networks = 9;
+}
+
+message NodeInfoRequest {
+  string node_id = 1;
+}
+
+message NodeInfoResponse {
+  string node_id = 1;
+  string address = 2;
+  string version = 3;
+  bool is_syncing = 4;
+  uint64 sync_progress = 5;
+  google.protobuf.Timestamp uptime = 6;
+  map<string, string> metadata = 7;
+  // Gateway-specific fields
+  string region = 8;
+  string datacenter = 9;
+  repeated string capabilities = 10;
+}
+
+message TransactionRequest {
+  string transaction_hash = 1;
+}
+
+message TransactionHistoryRequest {
+  string user_address = 1;
+  optional uint64 limit = 2;
+  optional uint64 offset = 3;
+  optional string transaction_type = 4;
+  optional string status = 5;
+  optional google.protobuf.Timestamp start_date = 6;
+  optional google.protobuf.Timestamp end_date = 7;
+}
+
+message TransactionHistoryResponse {
+  repeated TransactionInfo transactions = 1;
+  uint64 total_count = 2;
+  bool has_more = 3;
+  // Gateway-specific fields
+  PaginationInfo pagination = 4;
+}
+
+message TransactionInfo {
+  string transaction_hash = 1;
+  string transaction_type = 2;
+  string user_address = 3;
+  string amount = 4;
+  string token_address = 5;
+  string status = 6;
+  google.protobuf.Timestamp timestamp = 7;
+  uint64 block_number = 8;
+  uint64 gas_used = 9;
+  // Gateway-specific fields
+  uint64 confirmation_count = 10;
+  string fee_paid = 11;
+  map<string, string> metadata = 12;
+}
+
+message PaginationInfo {
+  uint64 current_page = 1;
+  uint64 total_pages = 2;
+  uint64 page_size = 3;
+  bool has_next = 4;
+  bool has_previous = 5;
+}
+
+message HealthCheckResponse {
+  string status = 1;
+  string message = 2;
+  google.protobuf.Timestamp timestamp = 3;
+  map<string, string> details = 4;
+  // Gateway-specific fields
+  repeated ServiceHealth services = 5;
+  double uptime_percentage = 6;
+}
+
+message ServiceHealth {
+  string service_name = 1;
+  string status = 2;
+  string message = 3;
+  google.protobuf.Timestamp last_check = 4;
+  map<string, string> metrics = 5;
+}

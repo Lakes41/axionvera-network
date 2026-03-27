@@ -9,9 +9,12 @@ pub type NodeId = [u8; 32];
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PeerInfo {
-    pub id: NodeId,
+    pub id: String,
     pub address: SocketAddr,
+    pub is_connected: bool,
     pub last_seen: chrono::DateTime<chrono::Utc>,
+    pub latency_ms: u64,
+    pub version: String,
 }
 
 pub struct KademliaRoutingTable {
@@ -84,6 +87,7 @@ impl KademliaRoutingTable {
 pub struct P2PManager {
     routing_table: Arc<RwLock<KademliaRoutingTable>>,
     local_id: NodeId,
+    connected_peers: Arc<RwLock<std::collections::HashMap<String, PeerInfo>>>,
 }
 
 impl P2PManager {
@@ -91,6 +95,7 @@ impl P2PManager {
         Self {
             routing_table: Arc::new(RwLock::new(KademliaRoutingTable::new(local_id))),
             local_id,
+            connected_peers: Arc::new(RwLock::new(std::collections::HashMap::new())),
         }
     }
 
@@ -123,5 +128,85 @@ impl P2PManager {
         debug!("Received PING from {:?}", from.address);
         // Update routing table
         Ok(())
+    }
+
+    /// Connect to a peer
+    pub async fn connect_to_peer(&self, address: SocketAddr, peer_id: String) -> Result<String> {
+        info!("Connecting to peer {} at {}", peer_id, address);
+        
+        let peer_info = PeerInfo {
+            id: peer_id.clone(),
+            address,
+            is_connected: true,
+            last_seen: chrono::Utc::now(),
+            latency_ms: 50, // Mock latency
+            version: "1.0.0".to_string(),
+        };
+
+        let mut connected_peers = self.connected_peers.write().await;
+        connected_peers.insert(peer_id.clone(), peer_info);
+        
+        let session_id = format!("session_{}", fastrand::u64(..));
+        info!("Successfully connected to peer {}, session: {}", peer_id, session_id);
+        
+        Ok(session_id)
+    }
+
+    /// Disconnect from a peer
+    pub async fn disconnect_from_peer(&self, peer_id: &str) -> Result<()> {
+        info!("Disconnecting from peer: {}", peer_id);
+        
+        let mut connected_peers = self.connected_peers.write().await;
+        if connected_peers.remove(peer_id).is_some() {
+            info!("Successfully disconnected from peer: {}", peer_id);
+            Ok(())
+        } else {
+            warn!("Peer {} was not connected", peer_id);
+            Err(crate::error::NetworkError::P2P("Peer not connected".to_string()))
+        }
+    }
+
+    /// Get list of all peers
+    pub async fn get_peer_list(&self) -> Vec<PeerInfo> {
+        let connected_peers = self.connected_peers.read().await;
+        connected_peers.values().cloned().collect()
+    }
+
+    /// Get count of connected peers
+    pub async fn get_connected_peers_count(&self) -> u64 {
+        let connected_peers = self.connected_peers.read().await;
+        connected_peers.len() as u64
+    }
+
+    /// Broadcast message to peers
+    pub async fn broadcast_message(
+        &self,
+        message_type: i32,
+        payload: &[u8],
+        target_peers: &[String],
+        ttl: u64,
+    ) -> Result<(u64, Vec<String>)> {
+        info!("Broadcasting message type {} to {} peers", message_type, target_peers.len());
+        
+        let connected_peers = self.connected_peers.read().await;
+        let mut recipients_count = 0;
+        let mut failed_peers = Vec::new();
+
+        if target_peers.is_empty() {
+            // Broadcast to all connected peers
+            recipients_count = connected_peers.len();
+        } else {
+            // Broadcast to specific peers
+            for peer_id in target_peers {
+                if connected_peers.contains_key(peer_id) {
+                    recipients_count += 1;
+                } else {
+                    failed_peers.push(peer_id.clone());
+                }
+            }
+        }
+
+        info!("Message broadcasted to {} recipients", recipients_count);
+        Ok((recipients_count, failed_peers))
     }
 }

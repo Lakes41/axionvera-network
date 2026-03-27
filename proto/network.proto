@@ -1,0 +1,293 @@
+syntax = "proto3";
+
+package axionvera.network;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+
+// Core network service for contract interactions
+service NetworkService {
+  // Contract interaction methods
+  rpc Deposit(DepositRequest) returns (TransactionResponse);
+  rpc Withdraw(WithdrawRequest) returns (TransactionResponse);
+  rpc DistributeRewards(DistributeRewardsRequest) returns (TransactionResponse);
+  rpc ClaimRewards(ClaimRewardsRequest) returns (TransactionResponse);
+  
+  // Query methods
+  rpc GetBalance(BalanceRequest) returns (BalanceResponse);
+  rpc GetRewards(RewardsRequest) returns (RewardsResponse);
+  rpc GetContractState(ContractStateRequest) returns (ContractStateResponse);
+  
+  // Network status methods
+  rpc GetNetworkStatus(google.protobuf.Empty) returns (NetworkStatusResponse);
+  rpc GetNodeInfo(NodeInfoRequest) returns (NodeInfoResponse);
+  
+  // Transaction methods
+  rpc GetTransaction(TransactionRequest) returns (TransactionResponse);
+  rpc GetTransactionHistory(TransactionHistoryRequest) returns (TransactionHistoryResponse);
+}
+
+// P2P network service for peer-to-peer communication
+service P2PService {
+  rpc ConnectToPeer(PeerConnectionRequest) returns (PeerConnectionResponse);
+  rpc DisconnectFromPeer(PeerDisconnectionRequest) returns (PeerDisconnectionResponse);
+  rpc GetPeerList(google.protobuf.Empty) returns (PeerListResponse);
+  rpc BroadcastMessage(BroadcastRequest) returns (BroadcastResponse);
+  rpc SyncChain(SyncRequest) returns (SyncResponse);
+}
+
+// Health check service
+service HealthService {
+  rpc Check(google.protobuf.Empty) returns (HealthCheckResponse);
+  rpc Watch(google.protobuf.Empty) returns (stream HealthCheckResponse);
+}
+
+// Message types for contract interactions
+
+message DepositRequest {
+  string user_address = 1;
+  string token_address = 2;
+  string amount = 3;
+  bytes signature = 4;
+  uint64 nonce = 5;
+  google.protobuf.Timestamp timestamp = 6;
+}
+
+message WithdrawRequest {
+  string user_address = 1;
+  string token_address = 2;
+  string amount = 3;
+  bytes signature = 4;
+  uint64 nonce = 5;
+  google.protobuf.Timestamp timestamp = 6;
+}
+
+message DistributeRewardsRequest {
+  string reward_token = 1;
+  string total_amount = 2;
+  bytes signature = 3;
+  uint64 nonce = 4;
+  google.protobuf.Timestamp timestamp = 5;
+}
+
+message ClaimRewardsRequest {
+  string user_address = 1;
+  bytes signature = 2;
+  uint64 nonce = 3;
+  google.protobuf.Timestamp timestamp = 4;
+}
+
+message TransactionResponse {
+  bool success = 1;
+  string transaction_hash = 2;
+  string error_message = 3;
+  uint64 gas_used = 4;
+  google.protobuf.Timestamp timestamp = 5;
+  map<string, string> events = 6;
+}
+
+message BalanceRequest {
+  string user_address = 1;
+  string token_address = 2;
+}
+
+message BalanceResponse {
+  string user_address = 1;
+  string token_address = 2;
+  string balance = 3;
+  string reward_index = 4;
+  string pending_rewards = 5;
+}
+
+message RewardsRequest {
+  string user_address = 1;
+}
+
+message RewardsResponse {
+  string user_address = 1;
+  string total_rewards = 2;
+  string claimable_rewards = 3;
+  string user_reward_index = 4;
+  string global_reward_index = 5;
+}
+
+message ContractStateRequest {
+  string contract_address = 1;
+}
+
+message ContractStateResponse {
+  string contract_address = 1;
+  string total_deposits = 2;
+  string reward_index = 3;
+  uint64 total_users = 4;
+  google.protobuf.Timestamp last_updated = 5;
+  map<string, string> custom_state = 6;
+}
+
+// Network status messages
+
+message NetworkStatusResponse {
+  bool is_healthy = 1;
+  uint64 block_height = 2;
+  uint64 connected_peers = 3;
+  double network_hash_rate = 4;
+  google.protobuf.Timestamp last_block_time = 5;
+  string network_version = 6;
+}
+
+message NodeInfoRequest {
+  string node_id = 1;
+}
+
+message NodeInfoResponse {
+  string node_id = 1;
+  string address = 2;
+  string version = 3;
+  bool is_syncing = 4;
+  uint64 sync_progress = 5;
+  google.protobuf.Timestamp uptime = 6;
+  map<string, string> metadata = 7;
+}
+
+// Transaction query messages
+
+message TransactionRequest {
+  string transaction_hash = 1;
+}
+
+message TransactionHistoryRequest {
+  string user_address = 1;
+  optional uint64 limit = 2;
+  optional uint64 offset = 3;
+  optional TransactionType transaction_type = 4;
+}
+
+message TransactionHistoryResponse {
+  repeated TransactionInfo transactions = 1;
+  uint64 total_count = 2;
+  bool has_more = 3;
+}
+
+message TransactionInfo {
+  string transaction_hash = 1;
+  TransactionType transaction_type = 2;
+  string user_address = 3;
+  string amount = 4;
+  string token_address = 5;
+  TransactionStatus status = 6;
+  google.protobuf.Timestamp timestamp = 7;
+  uint64 block_number = 8;
+  uint64 gas_used = 9;
+}
+
+enum TransactionType {
+  TRANSACTION_TYPE_UNSPECIFIED = 0;
+  DEPOSIT = 1;
+  WITHDRAW = 2;
+  DISTRIBUTION = 3;
+  CLAIM = 4;
+}
+
+enum TransactionStatus {
+  TRANSACTION_STATUS_UNSPECIFIED = 0;
+  PENDING = 1;
+  CONFIRMED = 2;
+  FAILED = 3;
+}
+
+// P2P network messages
+
+message PeerConnectionRequest {
+  string peer_address = 1;
+  string peer_id = 2;
+  optional bytes auth_token = 3;
+}
+
+message PeerConnectionResponse {
+  bool success = 1;
+  string peer_id = 2;
+  string session_id = 3;
+  string error_message = 4;
+}
+
+message PeerDisconnectionRequest {
+  string peer_id = 1;
+}
+
+message PeerDisconnectionResponse {
+  bool success = 1;
+  string error_message = 2;
+}
+
+message PeerListResponse {
+  repeated PeerInfo peers = 1;
+}
+
+message PeerInfo {
+  string peer_id = 1;
+  string address = 2;
+  bool is_connected = 3;
+  google.protobuf.Timestamp last_seen = 4;
+  uint64 latency_ms = 5;
+  string version = 6;
+  map<string, string> metadata = 7;
+}
+
+message BroadcastRequest {
+  MessageType message_type = 1;
+  bytes payload = 2;
+  repeated string target_peers = 3; // Empty for broadcast to all
+  uint64 ttl = 4; // Time to live in hops
+}
+
+message BroadcastResponse {
+  bool success = 1;
+  uint64 recipients_count = 2;
+  repeated string failed_peers = 3;
+  string message_id = 4;
+}
+
+enum MessageType {
+  MESSAGE_TYPE_UNSPECIFIED = 0;
+  TRANSACTION = 1;
+  BLOCK = 2;
+  STATE_UPDATE = 3;
+  PEER_ANNOUNCEMENT = 4;
+}
+
+message SyncRequest {
+  uint64 start_block = 1;
+  uint64 end_block = 2;
+  bool include_transactions = 3;
+}
+
+message SyncResponse {
+  bool success = 1;
+  repeated BlockData blocks = 2;
+  uint64 total_blocks = 3;
+  string sync_id = 4;
+}
+
+message BlockData {
+  uint64 block_number = 1;
+  string block_hash = 2;
+  google.protobuf.Timestamp timestamp = 3;
+  repeated TransactionInfo transactions = 4;
+  bytes state_root = 5;
+}
+
+// Health check messages
+
+message HealthCheckResponse {
+  HealthStatus status = 1;
+  string message = 2;
+  google.protobuf.Timestamp timestamp = 3;
+  map<string, string> details = 4;
+}
+
+enum HealthStatus {
+  HEALTH_STATUS_UNSPECIFIED = 0;
+  SERVING = 1;
+  NOT_SERVING = 2;
+  UNKNOWN = 3;
+}
