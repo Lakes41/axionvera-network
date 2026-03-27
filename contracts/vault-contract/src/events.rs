@@ -57,13 +57,25 @@ pub fn emit_initialize(e: &Env, admin: Address, deposit_token: Address, reward_t
 }
 
 pub fn emit_deposit(e: &Env, user: Address, amount: i128, new_balance: i128) {
-    e.events()
-        .publish((EVT_DEPOSIT,), DepositEvent { user, amount, new_balance });
+    e.events().publish(
+        (EVT_DEPOSIT,),
+        DepositEvent {
+            user,
+            amount,
+            new_balance,
+        },
+    );
 }
 
 pub fn emit_withdraw(e: &Env, user: Address, amount: i128, new_balance: i128) {
-    e.events()
-        .publish((EVT_WITHDRAW,), WithdrawEvent { user, amount, new_balance });
+    e.events().publish(
+        (EVT_WITHDRAW,),
+        WithdrawEvent {
+            user,
+            amount,
+            new_balance,
+        },
+    );
 }
 
 pub fn emit_distribute(e: &Env, caller: Address, amount: i128, reward_index: i128) {

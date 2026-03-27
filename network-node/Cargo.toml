@@ -30,6 +30,9 @@ tower-http = "0.5"
 metrics = "0.21"
 metrics-exporter-prometheus = "0.12"
 prometheus = "0.13"
+rocksdb = "0.21"
+sha2 = "0.10"
+hex = "0.4"
 
 [dev-dependencies]
 tempfile = "3.0"

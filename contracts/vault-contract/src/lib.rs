@@ -18,7 +18,12 @@ impl VaultContract {
         1
     }
 
-    pub fn initialize(e: Env, admin: Address, deposit_token: Address, reward_token: Address) -> Result<(), VaultError> {
+    pub fn initialize(
+        e: Env,
+        admin: Address,
+        deposit_token: Address,
+        reward_token: Address,
+    ) -> Result<(), VaultError> {
         if storage::is_initialized(&e) {
             return Err(VaultError::AlreadyInitialized);
         }
@@ -283,13 +288,22 @@ mod test {
         vault.initialize(&admin, &deposit_token_id, &reward_token_id);
 
         let err = vault.try_deposit(&user, &0).unwrap_err();
-        assert_eq!(err, Error::from_contract_error(VaultError::InvalidAmount as u32));
+        assert_eq!(
+            err,
+            Error::from_contract_error(VaultError::InvalidAmount as u32)
+        );
 
         let err = vault.try_withdraw(&user, &0).unwrap_err();
-        assert_eq!(err, Error::from_contract_error(VaultError::InvalidAmount as u32));
+        assert_eq!(
+            err,
+            Error::from_contract_error(VaultError::InvalidAmount as u32)
+        );
 
         let err = vault.try_distribute_rewards(&0).unwrap_err();
-        assert_eq!(err, Error::from_contract_error(VaultError::InvalidAmount as u32));
+        assert_eq!(
+            err,
+            Error::from_contract_error(VaultError::InvalidAmount as u32)
+        );
     }
 
     #[test]
@@ -313,7 +327,10 @@ mod test {
         vault.deposit(&user, &200);
 
         let err = vault.try_withdraw(&user, &201).unwrap_err();
-        assert_eq!(err, Error::from_contract_error(VaultError::InsufficientBalance as u32));
+        assert_eq!(
+            err,
+            Error::from_contract_error(VaultError::InsufficientBalance as u32)
+        );
     }
 
     #[test]
@@ -334,7 +351,10 @@ mod test {
         vault.initialize(&admin, &deposit_token_id, &reward_token_id);
 
         let err = vault.try_distribute_rewards(&100).unwrap_err();
-        assert_eq!(err, Error::from_contract_error(VaultError::NoDeposits as u32));
+        assert_eq!(
+            err,
+            Error::from_contract_error(VaultError::NoDeposits as u32)
+        );
     }
 
     #[test]
@@ -353,6 +373,9 @@ mod test {
         let err = vault
             .try_initialize(&admin, &deposit_token_id, &reward_token_id)
             .unwrap_err();
-        assert_eq!(err, Error::from_contract_error(VaultError::AlreadyInitialized as u32));
+        assert_eq!(
+            err,
+            Error::from_contract_error(VaultError::AlreadyInitialized as u32)
+        );
     }
 }

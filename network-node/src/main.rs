@@ -1,16 +1,15 @@
 use axionvera_network_node::NetworkNode;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use std::path::PathBuf;
 use tracing::{error, info, Level};
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
-use std::path::PathBuf;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logging
     let config = axionvera_network_node::config::NetworkConfig::from_env()?;
-    
-    let log_level = config.log_level.parse::<Level>()
-        .unwrap_or(Level::INFO);
+
+    let log_level = config.log_level.parse::<Level>().unwrap_or(Level::INFO);
 
     // Create JSON formatted logging layer
     let fmt_layer = tracing_subscriber::fmt::layer()
@@ -30,7 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         PathBuf::from(&log_dir),
         "axionvera-network.log",
     );
-    
+
     let file_layer = tracing_subscriber::fmt::layer()
         .json()
         .with_writer(file_appender)
@@ -45,8 +44,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize subscriber with both console and file layers
     tracing_subscriber::registry()
         .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(format!("axionvera_network_node={}", log_level)))
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                tracing_subscriber::EnvFilter::new(format!("axionvera_network_node={}", log_level))
+            }),
         )
         .with(fmt_layer)
         .with(file_layer)
@@ -61,7 +61,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create and start the network node
     let node = NetworkNode::new(config).await?;
-    
+
     if let Err(e) = node.start().await {
         error!("Network node failed: {}", e);
         std::process::exit(1);

@@ -173,10 +173,8 @@ pub fn accrue_user_rewards(e: &Env, user: &Address) -> Result<(), VaultError> {
             .checked_sub(user_idx)
             .ok_or(VaultError::MathOverflow)?;
 
-        let accrued = balance
-            .checked_mul(delta)
-            .ok_or(VaultError::MathOverflow)?
-            / REWARD_INDEX_SCALE;
+        let accrued =
+            balance.checked_mul(delta).ok_or(VaultError::MathOverflow)? / REWARD_INDEX_SCALE;
 
         if accrued > 0 {
             let current = get_user_rewards(e, user)?;
@@ -208,10 +206,7 @@ pub fn pending_user_rewards_view(e: &Env, user: &Address) -> Result<i128, VaultE
     let delta = global_idx
         .checked_sub(user_idx)
         .ok_or(VaultError::MathOverflow)?;
-    let accrued = balance
-        .checked_mul(delta)
-        .ok_or(VaultError::MathOverflow)?
-        / REWARD_INDEX_SCALE;
+    let accrued = balance.checked_mul(delta).ok_or(VaultError::MathOverflow)? / REWARD_INDEX_SCALE;
     Ok(current
         .checked_add(accrued)
         .ok_or(VaultError::MathOverflow)?)
@@ -224,9 +219,7 @@ fn bump_instance_ttl(e: &Env) {
 }
 
 fn bump_persistent_ttl(e: &Env, key: &DataKey) {
-    e.storage().persistent().extend_ttl(
-        key,
-        PERSISTENT_TTL_THRESHOLD,
-        PERSISTENT_TTL_EXTEND_TO,
-    );
+    e.storage()
+        .persistent()
+        .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
 }
