@@ -10,15 +10,26 @@
     "test:integration:clean": "docker system prune -f && vitest run --config vitest.integration.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "deploy": "tsx scripts/deploy.ts",
-    "initialize": "tsx scripts/initialize.ts"
+    "initialize": "tsx scripts/initialize.ts",
+    "format": "prettier --write . && cargo fmt --all",
+    "lint": "eslint . --fix && cargo clippy --all-targets --all-features -- -D warnings",
+    "prepare": "husky"
   },
   "devDependencies": {
-    "@types/node": "^22.10.6",
     "@testcontainers/postgresql": "^10.18.0",
+    "@types/node": "^22.10.6",
+    "eslint": "^9.0.0",
+    "husky": "^9.0.11",
+    "lint-staged": "^15.2.2",
+    "prettier": "^3.2.5",
     "testcontainers": "^10.18.0",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3",
     "vitest": "^2.1.9"
+  },
+  "lint-staged": {
+    "*.{ts,js,json,md}": "prettier --write",
+    "*.rs": "cargo fmt --all --"
   },
   "dependencies": {
     "@stellar/stellar-sdk": "^13.3.0",

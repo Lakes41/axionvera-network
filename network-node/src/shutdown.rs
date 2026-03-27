@@ -34,7 +34,7 @@ impl ShutdownHandler {
     /// Create a new shutdown handler
     pub fn new(grace_period: Duration) -> Self {
         let (signal_sender, _) = broadcast::channel(10);
-        
+
         Self {
             grace_period,
             signal_sender,
@@ -75,13 +75,13 @@ impl ShutdownHandler {
                     info!("Listening for SIGTERM signal");
                     sigterm.recv().await;
                     info!("SIGTERM received");
-                    
+
                     let mut shutdown_state = sigterm_state.write().await;
                     if !shutdown_state.is_shutting_down {
                         shutdown_state.is_shutting_down = true;
                         shutdown_state.shutdown_start_time = Some(chrono::Utc::now());
                         shutdown_state.signal_received = Some(ShutdownSignal::SigTerm);
-                        
+
                         let _ = sigterm_sender.send(ShutdownSignal::SigTerm);
                     }
                 }
@@ -98,13 +98,13 @@ impl ShutdownHandler {
                     info!("Listening for SIGINT signal");
                     sigint.recv().await;
                     info!("SIGINT received");
-                    
+
                     let mut shutdown_state = sigint_state.write().await;
                     if !shutdown_state.is_shutting_down {
                         shutdown_state.is_shutting_down = true;
                         shutdown_state.shutdown_start_time = Some(chrono::Utc::now());
                         shutdown_state.signal_received = Some(ShutdownSignal::SigInt);
-                        
+
                         let _ = sigint_sender.send(ShutdownSignal::SigInt);
                     }
                 }
@@ -121,13 +121,13 @@ impl ShutdownHandler {
                     info!("Listening for SIGQUIT signal");
                     sigquit.recv().await;
                     info!("SIGQUIT received");
-                    
+
                     let mut shutdown_state = sigquit_state.write().await;
                     if !shutdown_state.is_shutting_down {
                         shutdown_state.is_shutting_down = true;
                         shutdown_state.shutdown_start_time = Some(chrono::Utc::now());
                         shutdown_state.signal_received = Some(ShutdownSignal::SigQuit);
-                        
+
                         let _ = sigquit_sender.send(ShutdownSignal::SigQuit);
                     }
                 }
@@ -148,7 +148,7 @@ impl ShutdownHandler {
     /// Trigger manual shutdown
     pub async fn trigger_shutdown(&self, signal: ShutdownSignal) -> Result<(), NetworkError> {
         let mut state = self.shutdown_state.write().await;
-        
+
         if state.is_shutting_down {
             warn!("Shutdown already in progress");
             return Ok(());
@@ -159,8 +159,9 @@ impl ShutdownHandler {
         state.shutdown_start_time = Some(chrono::Utc::now());
         state.signal_received = Some(signal.clone());
 
-        self.signal_sender.send(signal)
-            .map_err(|e| NetworkError::Internal(format!("Failed to send shutdown signal: {}", e)))?;
+        self.signal_sender.send(signal).map_err(|e| {
+            NetworkError::Internal(format!("Failed to send shutdown signal: {}", e))
+        })?;
 
         Ok(())
     }
@@ -184,11 +185,11 @@ impl ShutdownHandler {
     /// Get remaining grace period
     pub async fn remaining_grace_period(&self) -> Option<Duration> {
         let state = self.shutdown_state.read().await;
-        
+
         if let Some(start_time) = state.shutdown_start_time {
             let elapsed = chrono::Utc::now() - start_time;
             let elapsed_duration = elapsed.to_std().unwrap_or(Duration::MAX);
-            
+
             if elapsed_duration < self.grace_period {
                 Some(self.grace_period - elapsed_duration)
             } else {
@@ -212,7 +213,8 @@ pub struct ShutdownInfo {
 impl ShutdownInfo {
     /// Get time elapsed since shutdown started
     pub fn elapsed_time(&self) -> Option<chrono::Duration> {
-        self.shutdown_start_time.map(|start| chrono::Utc::now() - start)
+        self.shutdown_start_time
+            .map(|start| chrono::Utc::now() - start)
     }
 
     /// Get remaining grace period
@@ -241,7 +243,10 @@ mod tests {
         let mut receiver = handler.start().await;
 
         // Trigger manual shutdown
-        handler.trigger_shutdown(ShutdownSignal::Manual).await.unwrap();
+        handler
+            .trigger_shutdown(ShutdownSignal::Manual)
+            .await
+            .unwrap();
 
         // Should receive the signal
         let received = receiver.recv().await.unwrap();
@@ -249,7 +254,7 @@ mod tests {
 
         // Check shutdown state
         assert!(handler.is_shutting_down().await);
-        
+
         let info = handler.get_shutdown_info().await;
         assert!(info.is_shutting_down);
         assert!(matches!(info.signal_received, Some(ShutdownSignal::Manual)));
@@ -258,13 +263,19 @@ mod tests {
     #[tokio::test]
     async fn test_grace_period_calculation() {
         let handler = ShutdownHandler::new(Duration::from_secs(10));
-        
+
         // Before shutdown
-        assert_eq!(handler.remaining_grace_period().await, Some(Duration::from_secs(10)));
+        assert_eq!(
+            handler.remaining_grace_period().await,
+            Some(Duration::from_secs(10))
+        );
 
         // Trigger shutdown
-        handler.trigger_shutdown(ShutdownSignal::Manual).await.unwrap();
-        
+        handler
+            .trigger_shutdown(ShutdownSignal::Manual)
+            .await
+            .unwrap();
+
         // Should have full grace period initially
         let remaining = handler.remaining_grace_period().await;
         assert!(remaining.is_some());

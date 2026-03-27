@@ -5,21 +5,23 @@ use tokio::sync::RwLock;
 use tokio::time::timeout;
 use tracing::{error, info, warn};
 
-use crate::error::NetworkError;
 use crate::config::NetworkConfig;
 use crate::database::ConnectionPool;
 use crate::enhanced_server::EnhancedHttpServer;
+use crate::error::NetworkError;
 use crate::error_middleware::{ErrorMiddleware, ErrorMiddlewareConfig};
 use crate::metrics::MetricsCollector;
 
-pub mod error;
 pub mod config;
 pub mod database;
+pub mod enhanced_server;
+pub mod error;
+pub mod error_middleware;
+pub mod metrics;
+pub mod p2p;
 pub mod server;
 pub mod shutdown;
-pub mod error_middleware;
-pub mod enhanced_server;
-pub mod metrics;
+pub mod state_trie;
 
 /// Main network node application
 pub struct NetworkNode {
@@ -29,6 +31,8 @@ pub struct NetworkNode {
     shutdown_handler: shutdown::ShutdownHandler,
     error_middleware: Arc<ErrorMiddleware>,
     metrics_collector: Arc<MetricsCollector>,
+    state_trie: Arc<RwLock<state_trie::StateTrie>>,
+    p2p_manager: Arc<p2p::P2PManager>,
 }
 
 impl NetworkNode {
@@ -44,11 +48,27 @@ impl NetworkNode {
 
         // Initialize database connection pool
         let connection_pool = Arc::new(RwLock::new(
-            ConnectionPool::new(&config.database_url).await?
+            ConnectionPool::new(&config.database_url).await?,
         ));
 
+        // Initialize state trie
+        let state_trie = Arc::new(RwLock::new(state_trie::StateTrie::new(
+            "./data/state_trie",
+        )?));
+
+        // Initialize P2P manager
+        let local_id = [0u8; 32]; // Replace with actual node ID generation
+        let p2p_manager = Arc::new(p2p::P2PManager::new(local_id));
+
         // Initialize enhanced HTTP server
-        let http_server = EnhancedHttpServer::new(config.clone(), connection_pool.clone(), error_middleware.clone(), metrics_collector.clone());
+        let http_server = EnhancedHttpServer::new(
+            config.clone(),
+            connection_pool.clone(),
+            error_middleware.clone(),
+            metrics_collector.clone(),
+            state_trie.clone(),
+            p2p_manager.clone(),
+        );
 
         // Initialize shutdown handler
         let shutdown_handler = shutdown::ShutdownHandler::new(config.shutdown_grace_period);
@@ -60,6 +80,8 @@ impl NetworkNode {
             shutdown_handler,
             error_middleware,
             metrics_collector,
+            state_trie,
+            p2p_manager,
         })
     }
 
@@ -72,6 +94,17 @@ impl NetworkNode {
 
         // Start HTTP server
         let server_handle = self.http_server.start().await?;
+
+        // Start P2P maintenance worker
+        self.p2p_manager.start_maintenance().await;
+
+        // Bootstrap if peer exists
+        if let Some(seed) = self.config.bootstrap_peer.clone() {
+            let seed_addr: std::net::SocketAddr = seed
+                .parse()
+                .map_err(|e| NetworkError::Config(format!("Invalid seed address: {}", e)))?;
+            self.p2p_manager.bootstrap(seed_addr).await?;
+        }
 
         info!("Network node started successfully");
 
@@ -102,7 +135,10 @@ impl NetworkNode {
 
         // Step 2: Wait for active operations to finish (grace period)
         let grace_period = self.config.shutdown_grace_period;
-        info!("Waiting for active operations to finish ({} seconds)...", grace_period.as_secs());
+        info!(
+            "Waiting for active operations to finish ({} seconds)...",
+            grace_period.as_secs()
+        );
 
         let shutdown_result = timeout(grace_period, async {
             // Wait for all active HTTP connections to complete
@@ -112,7 +148,8 @@ impl NetworkNode {
             self.wait_for_database_operations().await?;
 
             Ok::<(), NetworkError>(())
-        }).await;
+        })
+        .await;
 
         match shutdown_result {
             Ok(Ok(())) => {
@@ -141,11 +178,11 @@ impl NetworkNode {
     /// Wait for database operations to complete
     async fn wait_for_database_operations(&self) -> Result<(), NetworkError> {
         let pool = self.connection_pool.read().await;
-        
+
         // Wait for all active connections to become idle
         let mut attempts = 0;
         let max_attempts = 30; // 30 seconds with 1-second intervals
-        
+
         while attempts < max_attempts {
             let active_connections = pool.active_connections();
             if active_connections == 0 {
@@ -154,7 +191,10 @@ impl NetworkNode {
             }
 
             if attempts % 5 == 0 {
-                info!("Waiting for {} active database connections to complete...", active_connections);
+                info!(
+                    "Waiting for {} active database connections to complete...",
+                    active_connections
+                );
             }
 
             tokio::time::sleep(Duration::from_secs(1)).await;
@@ -191,10 +231,11 @@ mod tests {
             database_config: DatabaseConfig::default(),
             shutdown_grace_period: Duration::from_secs(5),
             log_level: "info".to_string(),
+            bootstrap_peer: None,
         };
 
         let node = NetworkNode::new(config).await.unwrap();
-        
+
         // Simulate shutdown signal
         let node_clone = node.clone();
         tokio::spawn(async move {

@@ -8,6 +8,7 @@ pub struct NetworkConfig {
     pub database_config: DatabaseConfig,
     pub shutdown_grace_period: Duration,
     pub log_level: String,
+    pub bootstrap_peer: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,21 +41,20 @@ impl DatabaseConfig {
 impl NetworkConfig {
     pub fn from_env() -> crate::error::Result<Self> {
         // Load configuration from environment variables
-        let bind_address = std::env::var("BIND_ADDRESS")
-            .unwrap_or_else(|_| "0.0.0.0:8080".to_string());
-        
-        let database_url = std::env::var("DATABASE_URL")
-            .unwrap_or_else(|_| "sqlite::memory:".to_string());
-        
+        let bind_address =
+            std::env::var("BIND_ADDRESS").unwrap_or_else(|_| "0.0.0.0:8080".to_string());
+
+        let database_url =
+            std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite::memory:".to_string());
+
         let shutdown_grace_period_secs = std::env::var("SHUTDOWN_GRACE_PERIOD")
             .unwrap_or_else(|_| "10".to_string())
             .parse::<u64>()
-            .map_err(|_| crate::error::NetworkError::Config(
-                "Invalid SHUTDOWN_GRACE_PERIOD".to_string()
-            ))?;
-        
-        let log_level = std::env::var("LOG_LEVEL")
-            .unwrap_or_else(|_| "info".to_string());
+            .map_err(|_| {
+                crate::error::NetworkError::Config("Invalid SHUTDOWN_GRACE_PERIOD".to_string())
+            })?;
+
+        let log_level = std::env::var("LOG_LEVEL").unwrap_or_else(|_| "info".to_string());
 
         Ok(Self {
             bind_address,
@@ -62,6 +62,7 @@ impl NetworkConfig {
             database_config: DatabaseConfig::default(),
             shutdown_grace_period: Duration::from_secs(shutdown_grace_period_secs),
             log_level,
+            bootstrap_peer: std::env::var("BOOTSTRAP_PEER").ok(),
         })
     }
 }
