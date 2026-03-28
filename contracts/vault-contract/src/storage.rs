@@ -110,7 +110,9 @@ pub fn get_user_balance(e: &Env, user: &Address) -> Result<i128, VaultError> {
     require_initialized(e)?;
     let key = DataKey::UserBalance(user.clone());
     let bal = e.storage().persistent().get(&key).unwrap_or(0_i128);
-    bump_persistent_ttl(e, &key);
+    if bal > 0 {
+        bump_persistent_ttl(e, &key);
+    }
     Ok(bal)
 }
 
@@ -128,7 +130,9 @@ pub fn get_user_reward_index(e: &Env, user: &Address) -> Result<i128, VaultError
     require_initialized(e)?;
     let key = DataKey::UserRewardIndex(user.clone());
     let idx = e.storage().persistent().get(&key).unwrap_or(0_i128);
-    bump_persistent_ttl(e, &key);
+    if idx > 0 {
+        bump_persistent_ttl(e, &key);
+    }
     Ok(idx)
 }
 
@@ -146,7 +150,9 @@ pub fn get_user_rewards(e: &Env, user: &Address) -> Result<i128, VaultError> {
     require_initialized(e)?;
     let key = DataKey::UserRewards(user.clone());
     let amt = e.storage().persistent().get(&key).unwrap_or(0_i128);
-    bump_persistent_ttl(e, &key);
+    if amt > 0 {
+        bump_persistent_ttl(e, &key);
+    }
     Ok(amt)
 }
 
