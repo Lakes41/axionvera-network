@@ -30,51 +30,7 @@ tower-http = "0.5"
 metrics = "0.21"
 metrics-exporter-prometheus = "0.12"
 prometheus = "0.13"
-rocksdb = "0.21"
-sha2 = "0.10"
-hex = "0.4"
-
-# Cryptographic dependencies
-ed25519-dalek = "2.0"
-curve25519-dalek = "4.1"
-rand = "0.8"
-
-# AWS KMS dependencies
-aws-config = "1.0"
-aws-sdk-kms = "1.0"
-aws-smithy-runtime = "1.0"
-aws-smithy-runtime-api = "1.0"
-aws-types = "1.0"
-
-# gRPC dependencies
-tonic = "0.11"
-prost = "0.12"
-prost-types = "0.12"
-tokio-stream = "0.1"
-fastrand = "2.0"
-ctrlc = "3.4"
-
-# gRPC Gateway dependencies
-tonic-web = "0.11"
-tonic-reflection = "0.11"
-http = "1.0"
-http-body = "1.0"
-
-# OpenAPI/Swagger dependencies
-utoipa = { version = "4.0", features = ["axum_extras"] }
-utoipa-swagger-ui = { version = "6.0", features = ["axum"] }
-serde_yaml = "0.9"
-
-# OpenTelemetry dependencies
-opentelemetry = "0.21"
-opentelemetry_sdk = { version = "0.21", features = ["rt-tokio"] }
-opentelemetry-jaeger = { version = "0.20", features = ["rt-tokio"] }
-opentelemetry-otlp = { version = "0.14", features = ["tokio"] }
-opentelemetry-semantic-conventions = "0.13"
-tracing-opentelemetry = "0.22"
-
-# Build dependencies
-tonic-build = "0.11"
+redis = { version = "0.23", features = ["tokio-comp"] }
 
 [dev-dependencies]
 tempfile = "3.0"

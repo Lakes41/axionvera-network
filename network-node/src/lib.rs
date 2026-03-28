@@ -22,14 +22,7 @@ pub mod error;
 pub mod error_middleware;
 pub mod grpc;
 pub mod metrics;
-pub mod p2p;
-pub mod profiling;
-pub mod server;
-pub mod shutdown;
-pub mod signing;
-pub mod aws_kms_signer;
-pub mod state_trie;
-pub mod telemetry;
+pub mod rate_limiter;
 
 /// Main network node application
 pub struct NetworkNode {
