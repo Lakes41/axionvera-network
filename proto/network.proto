@@ -25,6 +25,11 @@ service NetworkService {
   // Transaction methods
   rpc GetTransaction(TransactionRequest) returns (TransactionResponse);
   rpc GetTransactionHistory(TransactionHistoryRequest) returns (TransactionHistoryResponse);
+
+  // Chain parameter governance (genesis + scheduled activation epochs)
+  rpc ParameterUpgrade(ParameterUpgradeRequest) returns (TransactionResponse);
+  rpc GetChainParameters(google.protobuf.Empty) returns (ChainParametersView);
+  rpc ListPendingParameterUpgrades(google.protobuf.Empty) returns (PendingParameterUpgradesResponse);
 }
 
 // P2P network service for peer-to-peer communication
@@ -186,6 +191,54 @@ enum TransactionType {
   WITHDRAW = 2;
   DISTRIBUTION = 3;
   CLAIM = 4;
+  PARAMETER_UPGRADE = 5;
+}
+
+// --- Dynamic chain parameters (genesis + vote-based upgrades) ---
+
+message NetworkParameters {
+  uint64 max_block_body_bytes = 1;
+  uint64 min_base_fee = 2;
+  uint32 max_transactions_per_block = 3;
+}
+
+message NetworkParametersPatch {
+  optional uint64 max_block_body_bytes = 1;
+  optional uint64 min_base_fee = 2;
+  optional uint32 max_transactions_per_block = 3;
+}
+
+message ParameterUpgradeRequest {
+  // Fields to change; at least one must be set.
+  NetworkParametersPatch parameter_patch = 1;
+  // Block height at which the merged patch becomes effective for all nodes.
+  uint64 activation_epoch_height = 2;
+  // Required when genesis governance is `admin_keys` (must match an authorized key).
+  string proposer_address = 3;
+  bytes proposer_signature = 4;
+  uint64 nonce = 5;
+  google.protobuf.Timestamp timestamp = 6;
+  // When genesis governance is `dao`, list distinct DAO member addresses (min approvals from genesis).
+  repeated string dao_voter_addresses = 7;
+}
+
+message ChainParametersView {
+  string chain_id = 1;
+  uint64 current_block_height = 2;
+  NetworkParameters active_parameters = 3;
+  uint64 min_activation_delay_blocks = 4;
+  NetworkParameters genesis_parameters = 5;
+}
+
+message PendingParameterUpgrade {
+  string transaction_id = 1;
+  uint64 announced_at_height = 2;
+  uint64 activation_epoch_height = 3;
+  NetworkParametersPatch patch = 4;
+}
+
+message PendingParameterUpgradesResponse {
+  repeated PendingParameterUpgrade pending = 1;
 }
 
 enum TransactionStatus {

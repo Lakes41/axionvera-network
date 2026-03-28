@@ -19,6 +19,7 @@ use crate::grpc::{
 };
 use crate::state_trie::StateTrie;
 use crate::p2p::P2PManager;
+use crate::chain_params::ChainParameterRegistry;
 
 pub struct GrpcServer {
     config: NetworkConfig,
@@ -26,6 +27,20 @@ pub struct GrpcServer {
     state_trie: Arc<RwLock<StateTrie>>,
     p2p_manager: Arc<P2PManager>,
     signing_service: Arc<SigningService>,
+    chain_parameters: Arc<RwLock<ChainParameterRegistry>>,
+}
+
+impl Clone for GrpcServer {
+    fn clone(&self) -> Self {
+        Self {
+            config: self.config.clone(),
+            connection_pool: self.connection_pool.clone(),
+            state_trie: self.state_trie.clone(),
+            p2p_manager: self.p2p_manager.clone(),
+            signing_service: self.signing_service.clone(),
+            chain_parameters: self.chain_parameters.clone(),
+        }
+    }
 }
 
 impl GrpcServer {
@@ -35,6 +50,7 @@ impl GrpcServer {
         state_trie: Arc<RwLock<StateTrie>>,
         p2p_manager: Arc<P2PManager>,
         signing_service: Arc<SigningService>,
+        chain_parameters: Arc<RwLock<ChainParameterRegistry>>,
     ) -> Self {
         Self {
             config,
@@ -42,6 +58,7 @@ impl GrpcServer {
             state_trie,
             p2p_manager,
             signing_service,
+            chain_parameters,
         }
     }
     
@@ -58,16 +75,19 @@ impl GrpcServer {
         info!("Starting gRPC server on {}", addr);
 
         // Create service implementations
+        let chain_cp = self.chain_parameters.clone();
         let network_service = NetworkServiceImpl::new(
             self.connection_pool.clone(),
             self.state_trie.clone(),
             self.p2p_manager.clone(),
+            chain_cp.clone(),
         );
 
         let gateway_service = GatewayServiceImpl::new(
             self.connection_pool.clone(),
             self.state_trie.clone(),
             self.p2p_manager.clone(),
+            chain_cp.clone(),
         );
 
         let health_service = HealthServiceImpl::new(self.connection_pool.clone());
@@ -98,6 +118,7 @@ impl GrpcServer {
                 self.connection_pool.clone(),
                 self.state_trie.clone(),
                 self.p2p_manager.clone(),
+                self.chain_parameters.clone(),
             ))
             .accept_compressed(tonic::codec::CompressionEncoding::Gzip)
             .send_compressed(tonic::codec::CompressionEncoding::Gzip)

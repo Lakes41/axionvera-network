@@ -1,27 +1,67 @@
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::RwLock;
-use tonic::{Request, Response, Status, Code};
-use tracing::{info, error, warn};
+use tonic::{Request, Response, Status};
+use tracing::info;
 use fastrand;
 
+use crate::chain_params::{
+    ChainParameterRegistry, NetworkParameters as CoreNetworkParameters,
+    NetworkParametersPatch as CorePatch, ScheduledUpgradeRecord,
+};
 use crate::database::ConnectionPool;
 use crate::error::NetworkError;
 use crate::grpc::network::{
     network_service_server::NetworkService,
-    DepositRequest, WithdrawRequest, DistributeRewardsRequest, ClaimRewardsRequest,
-    TransactionResponse, BalanceRequest, BalanceResponse, RewardsRequest, RewardsResponse,
-    ContractStateRequest, ContractStateResponse, NetworkStatusResponse, NodeInfoRequest,
-    NodeInfoResponse, TransactionRequest, TransactionHistoryRequest, TransactionHistoryResponse,
-    TransactionInfo, TransactionType, TransactionStatus,
+    ChainParametersView, DepositRequest, WithdrawRequest, DistributeRewardsRequest,
+    ClaimRewardsRequest, TransactionResponse, BalanceRequest, BalanceResponse, RewardsRequest,
+    RewardsResponse, ContractStateRequest, ContractStateResponse, NetworkStatusResponse,
+    NodeInfoRequest, NodeInfoResponse, NetworkParameters as ProtoNetworkParameters,
+    NetworkParametersPatch as ProtoPatch, ParameterUpgradeRequest, PendingParameterUpgrade,
+    PendingParameterUpgradesResponse, TransactionRequest, TransactionHistoryRequest,
+    TransactionHistoryResponse, TransactionInfo, TransactionType, TransactionStatus,
 };
-use crate::state_trie::StateTrie;
 use crate::p2p::P2PManager;
+use crate::state_trie::StateTrie;
 
 pub struct NetworkServiceImpl {
     connection_pool: Arc<RwLock<ConnectionPool>>,
     state_trie: Arc<RwLock<StateTrie>>,
     p2p_manager: Arc<P2PManager>,
+    chain_parameters: Arc<RwLock<ChainParameterRegistry>>,
+}
+
+fn proto_patch_to_core(p: &ProtoPatch) -> CorePatch {
+    CorePatch {
+        max_block_body_bytes: p.max_block_body_bytes,
+        min_base_fee: p.min_base_fee,
+        max_transactions_per_block: p.max_transactions_per_block,
+    }
+}
+
+fn core_params_to_proto(p: &CoreNetworkParameters) -> ProtoNetworkParameters {
+    ProtoNetworkParameters {
+        max_block_body_bytes: p.max_block_body_bytes,
+        min_base_fee: p.min_base_fee,
+        max_transactions_per_block: p.max_transactions_per_block,
+    }
+}
+
+fn core_patch_to_proto(p: &CorePatch) -> ProtoPatch {
+    ProtoPatch {
+        max_block_body_bytes: p.max_block_body_bytes,
+        min_base_fee: p.min_base_fee,
+        max_transactions_per_block: p.max_transactions_per_block,
+    }
+}
+
+fn pending_record_to_proto(r: &ScheduledUpgradeRecord) -> PendingParameterUpgrade {
+    PendingParameterUpgrade {
+        transaction_id: r.transaction_id.clone(),
+        announced_at_height: r.announced_at_height,
+        activation_epoch_height: r.activation_epoch_height,
+        patch: Some(core_patch_to_proto(&r.patch)),
+    }
 }
 
 impl NetworkServiceImpl {
@@ -29,11 +69,13 @@ impl NetworkServiceImpl {
         connection_pool: Arc<RwLock<ConnectionPool>>,
         state_trie: Arc<RwLock<StateTrie>>,
         p2p_manager: Arc<P2PManager>,
+        chain_parameters: Arc<RwLock<ChainParameterRegistry>>,
     ) -> Self {
         Self {
             connection_pool,
             state_trie,
             p2p_manager,
+            chain_parameters,
         }
     }
 
@@ -44,7 +86,7 @@ impl NetworkServiceImpl {
         Ok(true)
     }
 
-    async fn process_transaction(&self, tx_type: TransactionType, request_data: &[u8]) -> Result<TransactionResponse, NetworkError> {
+    async fn process_transaction(&self, tx_type: TransactionType, _request_data: &[u8]) -> Result<TransactionResponse, NetworkError> {
         // TODO: Implement actual transaction processing
         info!("Processing transaction of type: {:?}", tx_type);
         
@@ -214,9 +256,14 @@ impl NetworkService for NetworkServiceImpl {
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_err(|e| Status::internal(format!("Timestamp error: {}", e)))?;
 
+        let block_height = {
+            let chain = self.chain_parameters.read().await;
+            chain.current_height()
+        };
+
         let response = NetworkStatusResponse {
             is_healthy: true,
-            block_height: 12345,
+            block_height,
             connected_peers: self.p2p_manager.get_connected_peers_count().await,
             network_hash_rate: 1500000000.0,
             last_block_time: Some(prost_types::Timestamp {
@@ -316,5 +363,98 @@ impl NetworkService for NetworkServiceImpl {
         };
 
         Ok(Response::new(response))
+    }
+
+    async fn parameter_upgrade(
+        &self,
+        request: Request<ParameterUpgradeRequest>,
+    ) -> Result<Response<TransactionResponse>, Status> {
+        let req = request.into_inner();
+        info!(
+            "Parameter upgrade: activation_epoch_height={}",
+            req.activation_epoch_height
+        );
+
+        let patch_msg = req
+            .parameter_patch
+            .as_ref()
+            .ok_or_else(|| Status::invalid_argument("parameter_patch is required"))?;
+        let core_patch = proto_patch_to_core(patch_msg);
+
+        if !req.proposer_address.trim().is_empty() {
+            if !self
+                .validate_signature(&req.proposer_address, &req.proposer_signature, req.nonce)
+                .await
+                .map_err(|e| Status::internal(format!("Validation error: {}", e)))?
+            {
+                return Err(Status::invalid_argument("Invalid proposer signature"));
+            }
+        }
+
+        let tx_id = {
+            let mut chain = self.chain_parameters.write().await;
+            chain
+                .submit_parameter_upgrade(
+                    core_patch,
+                    req.activation_epoch_height,
+                    &req.proposer_address,
+                    &req.dao_voter_addresses,
+                )
+                .map_err(|e| Status::permission_denied(e))?
+        };
+
+        let timestamp = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_err(|e| Status::internal(format!("Timestamp error: {}", e)))?;
+
+        let mut events = std::collections::HashMap::new();
+        events.insert(
+            "activation_epoch_height".to_string(),
+            req.activation_epoch_height.to_string(),
+        );
+        events.insert("tx_type".to_string(), "PARAMETER_UPGRADE".to_string());
+
+        Ok(Response::new(TransactionResponse {
+            success: true,
+            transaction_hash: tx_id,
+            error_message: String::new(),
+            gas_used: 0,
+            timestamp: Some(prost_types::Timestamp {
+                seconds: timestamp.as_secs() as i64,
+                nanos: timestamp.subsec_nanos() as i32,
+            }),
+            events,
+        }))
+    }
+
+    async fn get_chain_parameters(
+        &self,
+        _request: Request<()>,
+    ) -> Result<Response<ChainParametersView>, Status> {
+        let chain = self.chain_parameters.read().await;
+        let active = chain.active_parameters();
+        let genesis = chain.genesis_parameters().clone();
+
+        Ok(Response::new(ChainParametersView {
+            chain_id: chain.chain_id().to_string(),
+            current_block_height: chain.current_height(),
+            active_parameters: Some(core_params_to_proto(&active)),
+            min_activation_delay_blocks: chain.min_activation_delay_blocks(),
+            genesis_parameters: Some(core_params_to_proto(&genesis)),
+        }))
+    }
+
+    async fn list_pending_parameter_upgrades(
+        &self,
+        _request: Request<()>,
+    ) -> Result<Response<PendingParameterUpgradesResponse>, Status> {
+        let chain = self.chain_parameters.read().await;
+        let pending: Vec<PendingParameterUpgrade> = chain
+            .pending_upgrades()
+            .iter()
+            .map(pending_record_to_proto)
+            .collect();
+
+        Ok(Response::new(PendingParameterUpgradesResponse { pending }))
     }
 }

@@ -68,6 +68,25 @@ service GatewayService {
     };
   }
 
+  rpc ParameterUpgrade(ParameterUpgradeRequest) returns (TransactionResponse) {
+    option (google.api.http) = {
+      post: "/v1/chain/parameter-upgrade"
+      body: "*"
+    };
+  }
+
+  rpc GetChainParameters(google.protobuf.Empty) returns (ChainParametersView) {
+    option (google.api.http) = {
+      get: "/v1/chain/parameters"
+    };
+  }
+
+  rpc ListPendingParameterUpgrades(google.protobuf.Empty) returns (PendingParameterUpgradesResponse) {
+    option (google.api.http) = {
+      get: "/v1/chain/pending-parameter-upgrades"
+    };
+  }
+
   // Network status endpoints with HTTP annotations
   rpc GetNetworkStatus(google.protobuf.Empty) returns (NetworkStatusResponse) {
     option (google.api.http) = {
@@ -295,4 +314,49 @@ message ServiceHealth {
   string message = 3;
   google.protobuf.Timestamp last_check = 4;
   map<string, string> metrics = 5;
+}
+
+// --- Chain parameters (mirrors network.proto for gateway / HTTP) ---
+
+message NetworkParameters {
+  uint64 max_block_body_bytes = 1;
+  uint64 min_base_fee = 2;
+  uint32 max_transactions_per_block = 3;
+}
+
+message NetworkParametersPatch {
+  optional uint64 max_block_body_bytes = 1;
+  optional uint64 min_base_fee = 2;
+  optional uint32 max_transactions_per_block = 3;
+}
+
+message ParameterUpgradeRequest {
+  NetworkParametersPatch parameter_patch = 1;
+  uint64 activation_epoch_height = 2;
+  string proposer_address = 3;
+  bytes proposer_signature = 4;
+  uint64 nonce = 5;
+  google.protobuf.Timestamp timestamp = 6;
+  repeated string dao_voter_addresses = 7;
+  string request_id = 8;
+  string callback_url = 9;
+}
+
+message ChainParametersView {
+  string chain_id = 1;
+  uint64 current_block_height = 2;
+  NetworkParameters active_parameters = 3;
+  uint64 min_activation_delay_blocks = 4;
+  NetworkParameters genesis_parameters = 5;
+}
+
+message PendingParameterUpgrade {
+  string transaction_id = 1;
+  uint64 announced_at_height = 2;
+  uint64 activation_epoch_height = 3;
+  NetworkParametersPatch patch = 4;
+}
+
+message PendingParameterUpgradesResponse {
+  repeated PendingParameterUpgrade pending = 1;
 }

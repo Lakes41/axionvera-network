@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "chain_id": "axionvera-local-1",
+  "genesis_time_rfc3339": "2026-01-01T00:00:00Z",
+  "network_parameters": {
+    "max_block_body_bytes": 2097152,
+    "min_base_fee": 100,
+    "max_transactions_per_block": 1000
+  },
+  "parameter_upgrade_governance": {
+    "mode": "admin_keys",
+    "keys": [
+      "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
+    ]
+  },
+  "min_activation_delay_blocks": 720
+}

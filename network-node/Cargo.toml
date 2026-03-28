@@ -31,6 +31,27 @@ metrics = "0.21"
 metrics-exporter-prometheus = "0.12"
 prometheus = "0.13"
 redis = { version = "0.23", features = ["tokio-comp"] }
+tonic = { version = "0.11", features = ["transport", "prost", "gzip"] }
+prost = "0.12"
+prost-types = "0.12"
+tonic-web = "0.11"
+tonic-reflection = "0.11"
+fastrand = "2"
+rocksdb = "0.21"
+sha2 = "0.10"
+ed25519-dalek = "1"
+rand = "0.8"
+opentelemetry = "0.21"
+opentelemetry_sdk = { version = "0.21", features = ["rt-tokio"] }
+tracing-opentelemetry = "0.22"
+aws-config = "1"
+aws-sdk-kms = "1"
+aws-smithy-runtime = "1"
+aws-smithy-runtime-api = "1"
+aws-types = "1"
+
+[build-dependencies]
+tonic-build = "0.11"
 
 [dev-dependencies]
 tempfile = "3.0"

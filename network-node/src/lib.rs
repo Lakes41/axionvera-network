@@ -12,7 +12,10 @@ use crate::error::NetworkError;
 use crate::error_middleware::{ErrorMiddleware, ErrorMiddlewareConfig};
 use crate::metrics::MetricsCollector;
 use crate::signing::{SigningService, SignerFactory};
+use std::path::Path;
 
+pub mod aws_kms_signer;
+pub mod chain_params;
 pub mod config;
 pub mod consensus;
 pub mod crypto;
@@ -22,7 +25,12 @@ pub mod error;
 pub mod error_middleware;
 pub mod grpc;
 pub mod metrics;
+pub mod p2p;
 pub mod rate_limiter;
+pub mod shutdown;
+pub mod signing;
+pub mod state_trie;
+pub mod telemetry;
 
 /// Main network node application
 pub struct NetworkNode {
@@ -84,6 +92,14 @@ impl NetworkNode {
         
         let signing_service = Arc::new(signing_service);
 
+        let chain_parameters = Arc::new(RwLock::new(
+            match &config.genesis_config_path {
+                Some(p) => crate::chain_params::ChainParameterRegistry::from_genesis_file(Path::new(p))
+                    .map_err(|e| NetworkError::Config(e))?,
+                None => crate::chain_params::ChainParameterRegistry::development_default(),
+            },
+        ));
+
         // Initialize enhanced HTTP server
         let http_server = EnhancedHttpServer::new(
             config.clone(),
@@ -102,6 +118,7 @@ impl NetworkNode {
             state_trie.clone(),
             p2p_manager.clone(),
             signing_service.clone(),
+            chain_parameters,
         );
 
         // Initialize shutdown handler
@@ -300,6 +317,7 @@ mod tests {
             tracing_exporter: crate::config::TracingExporter::None,
             signing_config: None,
             cache_ttl_seconds: 3600,
+            genesis_config_path: None,
         };
 
         let node = NetworkNode::new(config).await.unwrap();

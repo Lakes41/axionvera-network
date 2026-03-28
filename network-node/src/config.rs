@@ -32,6 +32,8 @@ pub struct NetworkConfig {
     pub tracing_exporter: TracingExporter,
     pub signing_config: Option<SignerConfig>,
     pub cache_ttl_seconds: i64,
+    /// Path to genesis JSON (`config/genesis.example.json`). See `GENESIS_CONFIG_PATH`.
+    pub genesis_config_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,6 +98,13 @@ impl NetworkConfig {
             _ => TracingExporter::Otlp,
         };
 
+        let cache_ttl_seconds = std::env::var("CACHE_TTL_SECONDS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(3600);
+
+        let genesis_config_path = std::env::var("GENESIS_CONFIG_PATH").ok();
+
         Ok(Self {
             bind_address,
             grpc_bind_address: std::env::var("GRPC_BIND_ADDRESS").unwrap_or_else(|_| "0.0.0.0:50051".to_string()),
@@ -115,6 +124,9 @@ impl NetworkConfig {
             xray_endpoint: std::env::var("XRAY_ENDPOINT").ok(),
             tracing_enabled,
             tracing_exporter,
+            signing_config: None,
+            cache_ttl_seconds,
+            genesis_config_path,
         })
     }
 }

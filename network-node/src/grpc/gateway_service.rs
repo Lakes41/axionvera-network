@@ -7,17 +7,41 @@ use fastrand;
 
 use crate::database::ConnectionPool;
 use crate::error::NetworkError;
+use crate::chain_params::ChainParameterRegistry;
 use crate::grpc::gateway::{
     gateway_service_server::GatewayService,
-    DepositRequest, WithdrawRequest, DistributeRewardsRequest, ClaimRewardsRequest,
-    TransactionResponse, BalanceRequest, BalanceResponse, RewardsRequest, RewardsResponse,
-    ContractStateRequest, ContractStateResponse, NetworkStatusResponse, NodeInfoRequest,
-    NodeInfoResponse, TransactionRequest, TransactionHistoryRequest, TransactionHistoryResponse,
-    TransactionInfo, PaginationInfo, HealthCheckResponse, ServiceHealth,
+    ChainParametersView, DepositRequest, WithdrawRequest, DistributeRewardsRequest,
+    ClaimRewardsRequest, NetworkParameters as GwNetworkParameters,
+    NetworkParametersPatch as GwNetworkParametersPatch, TransactionResponse, BalanceRequest,
+    BalanceResponse, RewardsRequest, RewardsResponse, ContractStateRequest, ContractStateResponse,
+    NetworkStatusResponse, NodeInfoRequest, NodeInfoResponse, ParameterUpgradeRequest,
+    PendingParameterUpgrade, PendingParameterUpgradesResponse, TransactionRequest,
+    TransactionHistoryRequest, TransactionHistoryResponse, TransactionInfo, PaginationInfo,
+    HealthCheckResponse, ServiceHealth,
 };
 use crate::grpc::network_service::NetworkServiceImpl;
-use crate::state_trie::StateTrie;
 use crate::p2p::P2PManager;
+use crate::state_trie::StateTrie;
+
+fn gw_params_from_network(
+    p: Option<crate::grpc::network::NetworkParameters>,
+) -> Option<GwNetworkParameters> {
+    p.map(|x| GwNetworkParameters {
+        max_block_body_bytes: x.max_block_body_bytes,
+        min_base_fee: x.min_base_fee,
+        max_transactions_per_block: x.max_transactions_per_block,
+    })
+}
+
+fn gw_patch_from_network(
+    p: Option<crate::grpc::network::NetworkParametersPatch>,
+) -> Option<GwNetworkParametersPatch> {
+    p.map(|x| GwNetworkParametersPatch {
+        max_block_body_bytes: x.max_block_body_bytes,
+        min_base_fee: x.min_base_fee,
+        max_transactions_per_block: x.max_transactions_per_block,
+    })
+}
 
 pub struct GatewayServiceImpl {
     network_service: NetworkServiceImpl,
@@ -28,9 +52,15 @@ impl GatewayServiceImpl {
         connection_pool: Arc<RwLock<ConnectionPool>>,
         state_trie: Arc<RwLock<StateTrie>>,
         p2p_manager: Arc<P2PManager>,
+        chain_parameters: Arc<RwLock<ChainParameterRegistry>>,
     ) -> Self {
         Self {
-            network_service: NetworkServiceImpl::new(connection_pool, state_trie, p2p_manager),
+            network_service: NetworkServiceImpl::new(
+                connection_pool,
+                state_trie,
+                p2p_manager,
+                chain_parameters,
+            ),
         }
     }
 
@@ -337,6 +367,105 @@ impl GatewayService for GatewayServiceImpl {
 
             Ok(response)
         }).await
+    }
+
+    async fn parameter_upgrade(
+        &self,
+        request: Request<ParameterUpgradeRequest>,
+    ) -> Result<Response<TransactionResponse>, Status> {
+        let mut req = request.into_inner();
+        let request_id = if req.request_id.is_empty() {
+            Self::generate_request_id()
+        } else {
+            req.request_id.clone()
+        };
+
+        self.process_with_tracking(request_id.clone(), async move {
+            let net_patch = req.parameter_patch.map(|p| crate::grpc::network::NetworkParametersPatch {
+                max_block_body_bytes: p.max_block_body_bytes,
+                min_base_fee: p.min_base_fee,
+                max_transactions_per_block: p.max_transactions_per_block,
+            });
+
+            let network_req = Request::new(crate::grpc::network::ParameterUpgradeRequest {
+                parameter_patch: net_patch,
+                activation_epoch_height: req.activation_epoch_height,
+                proposer_address: req.proposer_address.clone(),
+                proposer_signature: req.proposer_signature.clone(),
+                nonce: req.nonce,
+                timestamp: req.timestamp,
+                dao_voter_addresses: req.dao_voter_addresses.clone(),
+            });
+
+            let nr = self
+                .network_service
+                .parameter_upgrade(network_req)
+                .await?
+                .into_inner();
+
+            let response = TransactionResponse {
+                success: nr.success,
+                transaction_hash: nr.transaction_hash,
+                error_message: nr.error_message,
+                gas_used: nr.gas_used,
+                timestamp: nr.timestamp,
+                events: nr.events,
+                request_id: request_id.clone(),
+                processing_time_ms: Instant::now().elapsed().as_millis() as u64,
+                status_url: format!("/v1/transaction/{}/status", nr.transaction_hash),
+            };
+
+            Ok(response)
+        })
+        .await
+    }
+
+    async fn get_chain_parameters(
+        &self,
+        _request: Request<()>,
+    ) -> Result<Response<ChainParametersView>, Status> {
+        let request_id = Self::generate_request_id();
+        self.process_with_tracking(request_id, async move {
+            let nv = self
+                .network_service
+                .get_chain_parameters(Request::new(()))
+                .await?
+                .into_inner();
+            Ok(ChainParametersView {
+                chain_id: nv.chain_id,
+                current_block_height: nv.current_block_height,
+                active_parameters: gw_params_from_network(nv.active_parameters),
+                min_activation_delay_blocks: nv.min_activation_delay_blocks,
+                genesis_parameters: gw_params_from_network(nv.genesis_parameters),
+            })
+        })
+        .await
+    }
+
+    async fn list_pending_parameter_upgrades(
+        &self,
+        _request: Request<()>,
+    ) -> Result<Response<PendingParameterUpgradesResponse>, Status> {
+        let request_id = Self::generate_request_id();
+        self.process_with_tracking(request_id, async move {
+            let nv = self
+                .network_service
+                .list_pending_parameter_upgrades(Request::new(()))
+                .await?
+                .into_inner();
+            let pending: Vec<PendingParameterUpgrade> = nv
+                .pending
+                .into_iter()
+                .map(|p| PendingParameterUpgrade {
+                    transaction_id: p.transaction_id,
+                    announced_at_height: p.announced_at_height,
+                    activation_epoch_height: p.activation_epoch_height,
+                    patch: gw_patch_from_network(p.patch),
+                })
+                .collect();
+            Ok(PendingParameterUpgradesResponse { pending })
+        })
+        .await
     }
 
     async fn check_health(&self, request: Request<()>) -> Result<Response<HealthCheckResponse>, Status> {
