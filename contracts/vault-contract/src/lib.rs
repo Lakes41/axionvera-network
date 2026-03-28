@@ -7,7 +7,6 @@ mod storage;
 use soroban_sdk::{contract, contractimpl, Address, Env};
 
 use crate::errors::VaultError;
-use crate::storage::REWARD_INDEX_SCALE;
 
 #[contract]
 pub struct VaultContract;
@@ -31,12 +30,7 @@ impl VaultContract {
         admin.require_auth();
         validate_init_config(&e, &admin, &deposit_token, &reward_token)?;
 
-        storage::set_initialized(&e);
-        storage::set_admin(&e, &admin);
-        storage::set_deposit_token(&e, &deposit_token);
-        storage::set_reward_token(&e, &reward_token);
-        storage::set_total_deposits(&e, 0);
-        storage::set_reward_index(&e, 0);
+        storage::initialize_state(&e, &admin, &deposit_token, &reward_token);
 
         events::emit_initialize(&e, admin, deposit_token, reward_token);
         Ok(())
@@ -47,25 +41,13 @@ impl VaultContract {
         validate_positive_amount(amount)?;
         from.require_auth();
         with_non_reentrant(&e, || {
-            storage::accrue_user_rewards(&e, &from)?;
-
-            let token_id = storage::get_deposit_token(&e)?;
+            let state = storage::get_state(&e)?;
+            let token_id = state.deposit_token.clone();
             let token = soroban_sdk::token::Client::new(&e, &token_id);
             token.transfer(&from, &e.current_contract_address(), &amount);
 
-            let prev_balance = storage::get_user_balance(&e, &from)?;
-            let next_balance = prev_balance
-                .checked_add(amount)
-                .ok_or(VaultError::MathOverflow)?;
-            storage::set_user_balance(&e, &from, next_balance);
-
-            let prev_total = storage::get_total_deposits(&e)?;
-            let next_total = prev_total
-                .checked_add(amount)
-                .ok_or(VaultError::MathOverflow)?;
-            storage::set_total_deposits(&e, next_total);
-
-            events::emit_deposit(&e, from, amount, next_balance);
+            let (_, position) = storage::store_deposit(&e, &from, amount)?;
+            events::emit_deposit(&e, from, amount, position.balance);
             Ok(())
         })
     }
@@ -75,28 +57,12 @@ impl VaultContract {
         validate_positive_amount(amount)?;
         to.require_auth();
         with_non_reentrant(&e, || {
-            storage::accrue_user_rewards(&e, &to)?;
-
-            let prev_balance = storage::get_user_balance(&e, &to)?;
-            if prev_balance < amount {
-                return Err(VaultError::InsufficientBalance);
-            }
-            let next_balance = prev_balance
-                .checked_sub(amount)
-                .ok_or(VaultError::MathOverflow)?;
-            storage::set_user_balance(&e, &to, next_balance);
-
-            let prev_total = storage::get_total_deposits(&e)?;
-            if prev_total < amount {
-                return Err(VaultError::InvalidState);
-            }
-            let next_total = prev_total
-                .checked_sub(amount)
-                .ok_or(VaultError::MathOverflow)?;
-            storage::set_total_deposits(&e, next_total);
-
-            let token_id = storage::get_deposit_token(&e)?;
+            let state = storage::get_state(&e)?;
+            let token_id = state.deposit_token.clone();
             let token = soroban_sdk::token::Client::new(&e, &token_id);
+
+            let (_, position) = storage::store_withdraw(&e, &to, amount)?;
+            let next_balance = position.balance;
             token.transfer(&e.current_contract_address(), &to, &amount);
 
             events::emit_withdraw(&e, to, amount, next_balance);
@@ -108,32 +74,16 @@ impl VaultContract {
         storage::require_initialized(&e)?;
         validate_positive_amount(amount)?;
 
-        let admin = storage::get_admin(&e)?;
+        let state = storage::get_state(&e)?;
+        let admin = state.admin.clone();
         admin.require_auth();
         with_non_reentrant(&e, || {
-            let total = storage::get_total_deposits(&e)?;
-            if total <= 0 {
-                return Err(VaultError::NoDeposits);
-            }
-
-            let increment = amount
-                .checked_mul(REWARD_INDEX_SCALE)
-                .ok_or(VaultError::MathOverflow)?
-                / total;
-            if increment <= 0 {
-                return Err(VaultError::ZeroRewardIncrement);
-            }
-
-            let reward_token_id = storage::get_reward_token(&e)?;
+            let reward_token_id = state.reward_token.clone();
             let reward_token = soroban_sdk::token::Client::new(&e, &reward_token_id);
             reward_token.transfer(&admin, &e.current_contract_address(), &amount);
 
-            let prev_idx = storage::get_reward_index(&e)?;
-            let next_idx = prev_idx
-                .checked_add(increment)
-                .ok_or(VaultError::MathOverflow)?;
-            storage::set_reward_index(&e, next_idx);
-
+            let next_state = storage::store_reward_distribution(&e, amount)?;
+            let next_idx = next_state.reward_index;
             events::emit_distribute(&e, admin, amount, next_idx);
             Ok(next_idx)
         })
@@ -143,15 +93,13 @@ impl VaultContract {
         storage::require_initialized(&e)?;
         user.require_auth();
         with_non_reentrant(&e, || {
-            storage::accrue_user_rewards(&e, &user)?;
-            let amt = storage::get_user_rewards(&e, &user)?;
+            let state = storage::get_state(&e)?;
+            let amt = storage::store_claimable_rewards(&e, &user)?;
             if amt <= 0 {
                 return Ok(0);
             }
 
-            storage::set_user_rewards(&e, &user, 0);
-
-            let reward_token_id = storage::get_reward_token(&e)?;
+            let reward_token_id = state.reward_token.clone();
             let reward_token = soroban_sdk::token::Client::new(&e, &reward_token_id);
             reward_token.transfer(&e.current_contract_address(), &user, &amt);
 
@@ -221,7 +169,6 @@ where
 }
 
 // TODO(reward-optimization): Consider a higher precision / rounding strategy for small totals.
-// TODO(gas): Consider merging per-user keys (balance/index/rewards) into a single struct to reduce reads.
 // TODO(security): Consider adding pausability or per-user deposit caps.
 // TODO(governance): Introduce admin handover / multisig patterns.
 // TODO(upgradeability): Evaluate upgrade patterns compatible with Soroban best practices.
@@ -229,6 +176,7 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::storage::REWARD_INDEX_SCALE;
     use soroban_sdk::testutils::Address as _;
     use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
 
