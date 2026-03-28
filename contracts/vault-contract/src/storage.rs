@@ -82,10 +82,13 @@ pub fn get_reward_token(e: &Env) -> Result<Address, VaultError> {
 
 pub fn get_total_deposits(e: &Env) -> Result<i128, VaultError> {
     require_initialized(e)?;
+    if !e.storage().instance().has(&DataKey::TotalDeposits) {
+        return Ok(0);
+    }
     Ok(e.storage()
         .instance()
         .get(&DataKey::TotalDeposits)
-        .unwrap_or(0_i128))
+        .ok_or(VaultError::NotInitialized)?)
 }
 
 pub fn set_total_deposits(e: &Env, total: i128) {
@@ -95,10 +98,13 @@ pub fn set_total_deposits(e: &Env, total: i128) {
 
 pub fn get_reward_index(e: &Env) -> Result<i128, VaultError> {
     require_initialized(e)?;
+    if !e.storage().instance().has(&DataKey::RewardIndex) {
+        return Ok(0);
+    }
     Ok(e.storage()
         .instance()
         .get(&DataKey::RewardIndex)
-        .unwrap_or(0_i128))
+        .ok_or(VaultError::NotInitialized)?)
 }
 
 pub fn set_reward_index(e: &Env, idx: i128) {
@@ -109,7 +115,14 @@ pub fn set_reward_index(e: &Env, idx: i128) {
 pub fn get_user_balance(e: &Env, user: &Address) -> Result<i128, VaultError> {
     require_initialized(e)?;
     let key = DataKey::UserBalance(user.clone());
-    let bal = e.storage().persistent().get(&key).unwrap_or(0_i128);
+    if !e.storage().persistent().has(&key) {
+        return Ok(0);
+    }
+    let bal = e
+        .storage()
+        .persistent()
+        .get(&key)
+        .ok_or(VaultError::NotInitialized)?;
     bump_persistent_ttl(e, &key);
     Ok(bal)
 }
@@ -127,7 +140,14 @@ pub fn set_user_balance(e: &Env, user: &Address, balance: i128) {
 pub fn get_user_reward_index(e: &Env, user: &Address) -> Result<i128, VaultError> {
     require_initialized(e)?;
     let key = DataKey::UserRewardIndex(user.clone());
-    let idx = e.storage().persistent().get(&key).unwrap_or(0_i128);
+    if !e.storage().persistent().has(&key) {
+        return Ok(0);
+    }
+    let idx = e
+        .storage()
+        .persistent()
+        .get(&key)
+        .ok_or(VaultError::NotInitialized)?;
     bump_persistent_ttl(e, &key);
     Ok(idx)
 }
@@ -145,7 +165,14 @@ pub fn set_user_reward_index(e: &Env, user: &Address, idx: i128) {
 pub fn get_user_rewards(e: &Env, user: &Address) -> Result<i128, VaultError> {
     require_initialized(e)?;
     let key = DataKey::UserRewards(user.clone());
-    let amt = e.storage().persistent().get(&key).unwrap_or(0_i128);
+    if !e.storage().persistent().has(&key) {
+        return Ok(0);
+    }
+    let amt = e
+        .storage()
+        .persistent()
+        .get(&key)
+        .ok_or(VaultError::NotInitialized)?;
     bump_persistent_ttl(e, &key);
     Ok(amt)
 }

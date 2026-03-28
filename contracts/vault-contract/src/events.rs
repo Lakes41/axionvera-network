@@ -12,6 +12,7 @@ pub struct InitializeEvent {
     pub admin: Address,
     pub deposit_token: Address,
     pub reward_token: Address,
+    pub timestamp: u64,
 }
 
 #[contracttype]
@@ -20,6 +21,7 @@ pub struct DepositEvent {
     pub user: Address,
     pub amount: i128,
     pub new_balance: i128,
+    pub timestamp: u64,
 }
 
 #[contracttype]
@@ -28,6 +30,7 @@ pub struct WithdrawEvent {
     pub user: Address,
     pub amount: i128,
     pub new_balance: i128,
+    pub timestamp: u64,
 }
 
 #[contracttype]
@@ -36,6 +39,7 @@ pub struct DistributeRewardsEvent {
     pub caller: Address,
     pub amount: i128,
     pub reward_index: i128,
+    pub timestamp: u64,
 }
 
 #[contracttype]
@@ -43,6 +47,7 @@ pub struct DistributeRewardsEvent {
 pub struct ClaimRewardsEvent {
     pub user: Address,
     pub amount: i128,
+    pub timestamp: u64,
 }
 
 pub fn emit_initialize(e: &Env, admin: Address, deposit_token: Address, reward_token: Address) {
@@ -52,6 +57,7 @@ pub fn emit_initialize(e: &Env, admin: Address, deposit_token: Address, reward_t
             admin,
             deposit_token,
             reward_token,
+            timestamp: e.ledger().timestamp(),
         },
     );
 }
@@ -63,6 +69,7 @@ pub fn emit_deposit(e: &Env, user: Address, amount: i128, new_balance: i128) {
             user,
             amount,
             new_balance,
+            timestamp: e.ledger().timestamp(),
         },
     );
 }
@@ -74,6 +81,7 @@ pub fn emit_withdraw(e: &Env, user: Address, amount: i128, new_balance: i128) {
             user,
             amount,
             new_balance,
+            timestamp: e.ledger().timestamp(),
         },
     );
 }
@@ -85,11 +93,18 @@ pub fn emit_distribute(e: &Env, caller: Address, amount: i128, reward_index: i12
             caller,
             amount,
             reward_index,
+            timestamp: e.ledger().timestamp(),
         },
     );
 }
 
 pub fn emit_claim(e: &Env, user: Address, amount: i128) {
-    e.events()
-        .publish((EVT_CLAIM,), ClaimRewardsEvent { user, amount });
+    e.events().publish(
+        (EVT_CLAIM,),
+        ClaimRewardsEvent {
+            user,
+            amount,
+            timestamp: e.ledger().timestamp(),
+        },
+    );
 }
