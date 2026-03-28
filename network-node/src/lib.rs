@@ -11,6 +11,7 @@ use crate::enhanced_server::EnhancedHttpServer;
 use crate::error::NetworkError;
 use crate::error_middleware::{ErrorMiddleware, ErrorMiddlewareConfig};
 use crate::metrics::MetricsCollector;
+use crate::signing::{SigningService, SignerFactory};
 
 pub mod config;
 pub mod consensus;
@@ -25,6 +26,8 @@ pub mod p2p;
 pub mod profiling;
 pub mod server;
 pub mod shutdown;
+pub mod signing;
+pub mod aws_kms_signer;
 pub mod state_trie;
 pub mod telemetry;
 
@@ -39,6 +42,7 @@ pub struct NetworkNode {
     metrics_collector: Arc<MetricsCollector>,
     state_trie: Arc<RwLock<state_trie::StateTrie>>,
     p2p_manager: Arc<p2p::P2PManager>,
+    signing_service: Arc<SigningService>,
 }
 
 impl NetworkNode {
@@ -66,6 +70,27 @@ impl NetworkNode {
         let local_id = [0u8; 32]; // Replace with actual node ID generation
         let p2p_manager = Arc::new(p2p::P2PManager::new(local_id));
 
+        // Initialize signing service
+        let cache_ttl_seconds = config.cache_ttl_seconds;
+        let mut signing_service = SigningService::new(cache_ttl_seconds);
+        
+        // Configure signer if provided
+        if let Some(signer_config) = &config.signing_config {
+            let signer = SignerFactory::create_signer(signer_config.clone()).await?;
+            let key_id = signer.get_key_id().await?;
+            signing_service.add_signer(key_id.clone(), signer).await?;
+            signing_service.set_default_signer(key_id).await?;
+            info!("Signing service initialized with configured signer");
+        } else {
+            info!("No signing configuration provided, using local signer");
+            // For development, create a local signer
+            let local_signer = crate::signing::LocalSigner::new("default_key.pem").await?;
+            signing_service.add_signer("default".to_string(), Arc::new(local_signer)).await?;
+            signing_service.set_default_signer("default".to_string()).await?;
+        }
+        
+        let signing_service = Arc::new(signing_service);
+
         // Initialize enhanced HTTP server
         let http_server = EnhancedHttpServer::new(
             config.clone(),
@@ -74,6 +99,7 @@ impl NetworkNode {
             metrics_collector.clone(),
             state_trie.clone(),
             p2p_manager.clone(),
+            signing_service.clone(),
         );
 
         // Initialize gRPC server
@@ -82,6 +108,7 @@ impl NetworkNode {
             connection_pool.clone(),
             state_trie.clone(),
             p2p_manager.clone(),
+            signing_service.clone(),
         );
 
         // Initialize shutdown handler
@@ -97,6 +124,7 @@ impl NetworkNode {
             metrics_collector,
             state_trie,
             p2p_manager,
+            signing_service,
         })
     }
 
@@ -243,6 +271,11 @@ impl NetworkNode {
         info!("All database connections closed");
         Ok(())
     }
+    
+    /// Get a reference to the signing service
+    pub fn signing_service(&self) -> &Arc<SigningService> {
+        &self.signing_service
+    }
 }
 
 #[cfg(test)]
@@ -255,11 +288,25 @@ mod tests {
     async fn test_graceful_shutdown() {
         let config = NetworkConfig {
             bind_address: "127.0.0.1:0".to_string(),
+            grpc_bind_address: "127.0.0.1:0".to_string(),
+            gateway_bind_address: "127.0.0.1:0".to_string(),
             database_url: "sqlite::memory:".to_string(),
             database_config: DatabaseConfig::default(),
             shutdown_grace_period: Duration::from_secs(5),
             log_level: "info".to_string(),
             bootstrap_peer: None,
+            tls_cert_path: None,
+            tls_key_path: None,
+            enable_gateway: false,
+            enable_reflection: false,
+            node_id: "test-node".to_string(),
+            otlp_endpoint: None,
+            jaeger_endpoint: None,
+            xray_endpoint: None,
+            tracing_enabled: false,
+            tracing_exporter: crate::config::TracingExporter::None,
+            signing_config: None,
+            cache_ttl_seconds: 3600,
         };
 
         let node = NetworkNode::new(config).await.unwrap();

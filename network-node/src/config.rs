@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use crate::signing::SignerConfig;
 use std::time::Duration;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,6 +30,8 @@ pub struct NetworkConfig {
     pub xray_endpoint: Option<String>,
     pub tracing_enabled: bool,
     pub tracing_exporter: TracingExporter,
+    pub signing_config: Option<SignerConfig>,
+    pub cache_ttl_seconds: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

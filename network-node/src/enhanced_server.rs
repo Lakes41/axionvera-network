@@ -18,6 +18,7 @@ use crate::database::ConnectionPool;
 use crate::error::{ContextualError, ErrorContext, NetworkError, Result};
 use crate::error_middleware::ErrorMiddleware;
 use crate::metrics::MetricsCollector;
+use crate::signing::SigningService;
 
 /// Enhanced HTTP server with error middleware
 pub struct EnhancedHttpServer {
@@ -27,6 +28,7 @@ pub struct EnhancedHttpServer {
     metrics_collector: Arc<MetricsCollector>,
     state_trie: Arc<RwLock<crate::state_trie::StateTrie>>,
     p2p_manager: Arc<crate::p2p::P2PManager>,
+    signing_service: Arc<SigningService>,
     is_accepting_connections: Arc<RwLock<bool>>,
     active_connections: Arc<RwLock<usize>>,
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
@@ -41,6 +43,7 @@ impl EnhancedHttpServer {
         metrics_collector: Arc<MetricsCollector>,
         state_trie: Arc<RwLock<crate::state_trie::StateTrie>>,
         p2p_manager: Arc<crate::p2p::P2PManager>,
+        signing_service: Arc<SigningService>,
     ) -> Self {
         Self {
             config,
@@ -49,10 +52,16 @@ impl EnhancedHttpServer {
             metrics_collector,
             state_trie,
             p2p_manager,
+            signing_service,
             is_accepting_connections: Arc::new(RwLock::new(true)),
             active_connections: Arc::new(RwLock::new(0)),
             shutdown_tx: None,
         }
+    }
+    
+    /// Get a reference to the signing service
+    pub fn signing_service(&self) -> &Arc<SigningService> {
+        &self.signing_service
     }
 
     /// Start the enhanced HTTP server

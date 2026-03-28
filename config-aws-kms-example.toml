@@ -1,0 +1,50 @@
+# Example configuration for AWS KMS integration
+# Copy this file to config.toml and modify the values as needed
+
+[server]
+bind_address = "0.0.0.0:8080"
+grpc_bind_address = "0.0.0.0:50051"
+gateway_bind_address = "0.0.0.0:8081"
+
+[database]
+url = "postgresql://user:password@localhost:5432/axionvera"
+min_connections = 2
+max_connections = 10
+connection_timeout_secs = 30
+idle_timeout_secs = 300
+
+[signing]
+# AWS KMS Configuration
+type = "AwsKms"
+key_id = "arn:aws:kms:us-east-1:123456789012:key/12345678-1234-1234-1234-123456789012"
+region = "us-east-1"
+# Optional: AWS profile to use (defaults to default profile)
+# profile = "my-aws-profile"
+
+# Cache configuration for public keys
+cache_ttl_seconds = 3600  # Cache public keys for 1 hour
+
+[node]
+node_id = "axionvera-node-1"
+shutdown_grace_period_secs = 30
+
+[bootstrap]
+# Optional: bootstrap peer address
+# peer = "192.168.1.100:8080"
+
+[tls]
+# Optional: TLS configuration
+# cert_path = "/path/to/cert.pem"
+# key_path = "/path/to/key.pem"
+
+[logging]
+level = "info"
+# OpenTelemetry configuration
+[logging.tracing]
+enabled = true
+exporter = "Otlp"  # Options: Otlp, Jaeger, XRay, None
+endpoint = "http://localhost:4317"
+
+[gateway]
+enabled = true
+reflection_enabled = true

@@ -9,6 +9,7 @@ use tracing::{info, error, warn};
 use crate::config::NetworkConfig;
 use crate::database::ConnectionPool;
 use crate::error::NetworkError;
+use crate::signing::SigningService;
 use crate::grpc::{
     NetworkServiceImpl, GatewayServiceImpl, HealthServiceImpl, P2PServiceImpl,
     network::network_service_server::NetworkServiceServer,
@@ -24,6 +25,7 @@ pub struct GrpcServer {
     connection_pool: Arc<RwLock<ConnectionPool>>,
     state_trie: Arc<RwLock<StateTrie>>,
     p2p_manager: Arc<P2PManager>,
+    signing_service: Arc<SigningService>,
 }
 
 impl GrpcServer {
@@ -32,13 +34,20 @@ impl GrpcServer {
         connection_pool: Arc<RwLock<ConnectionPool>>,
         state_trie: Arc<RwLock<StateTrie>>,
         p2p_manager: Arc<P2PManager>,
+        signing_service: Arc<SigningService>,
     ) -> Self {
         Self {
             config,
             connection_pool,
             state_trie,
             p2p_manager,
+            signing_service,
         }
+    }
+    
+    /// Get a reference to the signing service
+    pub fn signing_service(&self) -> &Arc<SigningService> {
+        &self.signing_service
     }
 
     pub async fn start(&self) -> Result<(), NetworkError> {
