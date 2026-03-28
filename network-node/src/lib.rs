@@ -5,20 +5,22 @@ use tokio::sync::RwLock;
 use tokio::time::timeout;
 use tracing::{error, info, warn};
 
-use crate::error::NetworkError;
 use crate::config::NetworkConfig;
 use crate::database::ConnectionPool;
 use crate::enhanced_server::EnhancedHttpServer;
+use crate::error::NetworkError;
 use crate::error_middleware::{ErrorMiddleware, ErrorMiddlewareConfig};
 use crate::metrics::MetricsCollector;
+use crate::signing::{SigningService, SignerFactory};
 
-pub mod error;
 pub mod config;
+pub mod consensus;
+pub mod crypto;
 pub mod database;
-pub mod server;
-pub mod shutdown;
-pub mod error_middleware;
 pub mod enhanced_server;
+pub mod error;
+pub mod error_middleware;
+pub mod grpc;
 pub mod metrics;
 pub mod rate_limiter;
 
@@ -27,9 +29,13 @@ pub struct NetworkNode {
     config: NetworkConfig,
     connection_pool: Arc<RwLock<ConnectionPool>>,
     http_server: EnhancedHttpServer,
+    grpc_server: crate::grpc::server::GrpcServer,
     shutdown_handler: shutdown::ShutdownHandler,
     error_middleware: Arc<ErrorMiddleware>,
     metrics_collector: Arc<MetricsCollector>,
+    state_trie: Arc<RwLock<state_trie::StateTrie>>,
+    p2p_manager: Arc<p2p::P2PManager>,
+    signing_service: Arc<SigningService>,
 }
 
 impl NetworkNode {
@@ -45,11 +51,58 @@ impl NetworkNode {
 
         // Initialize database connection pool
         let connection_pool = Arc::new(RwLock::new(
-            ConnectionPool::new(&config.database_url).await?
+            ConnectionPool::new(&config.database_url).await?,
         ));
 
+        // Initialize state trie
+        let state_trie = Arc::new(RwLock::new(state_trie::StateTrie::new(
+            "./data/state_trie",
+        )?));
+
+        // Initialize P2P manager
+        let local_id = [0u8; 32]; // Replace with actual node ID generation
+        let p2p_manager = Arc::new(p2p::P2PManager::new(local_id));
+
+        // Initialize signing service
+        let cache_ttl_seconds = config.cache_ttl_seconds;
+        let mut signing_service = SigningService::new(cache_ttl_seconds);
+        
+        // Configure signer if provided
+        if let Some(signer_config) = &config.signing_config {
+            let signer = SignerFactory::create_signer(signer_config.clone()).await?;
+            let key_id = signer.get_key_id().await?;
+            signing_service.add_signer(key_id.clone(), signer).await?;
+            signing_service.set_default_signer(key_id).await?;
+            info!("Signing service initialized with configured signer");
+        } else {
+            info!("No signing configuration provided, using local signer");
+            // For development, create a local signer
+            let local_signer = crate::signing::LocalSigner::new("default_key.pem").await?;
+            signing_service.add_signer("default".to_string(), Arc::new(local_signer)).await?;
+            signing_service.set_default_signer("default".to_string()).await?;
+        }
+        
+        let signing_service = Arc::new(signing_service);
+
         // Initialize enhanced HTTP server
-        let http_server = EnhancedHttpServer::new(config.clone(), connection_pool.clone(), error_middleware.clone(), metrics_collector.clone());
+        let http_server = EnhancedHttpServer::new(
+            config.clone(),
+            connection_pool.clone(),
+            error_middleware.clone(),
+            metrics_collector.clone(),
+            state_trie.clone(),
+            p2p_manager.clone(),
+            signing_service.clone(),
+        );
+
+        // Initialize gRPC server
+        let grpc_server = crate::grpc::server::GrpcServer::new(
+            config.clone(),
+            connection_pool.clone(),
+            state_trie.clone(),
+            p2p_manager.clone(),
+            signing_service.clone(),
+        );
 
         // Initialize shutdown handler
         let shutdown_handler = shutdown::ShutdownHandler::new(config.shutdown_grace_period);
@@ -58,9 +111,13 @@ impl NetworkNode {
             config,
             connection_pool,
             http_server,
+            grpc_server,
             shutdown_handler,
             error_middleware,
             metrics_collector,
+            state_trie,
+            p2p_manager,
+            signing_service,
         })
     }
 
@@ -72,17 +129,41 @@ impl NetworkNode {
         let shutdown_signal = self.shutdown_handler.start();
 
         // Start HTTP server
-        let server_handle = self.http_server.start().await?;
+        let http_server_handle = self.http_server.start().await?;
+
+        // Start gRPC server
+        let grpc_server_handle = {
+            let grpc_server = self.grpc_server.clone();
+            tokio::spawn(async move {
+                if let Err(e) = grpc_server.start().await {
+                    error!("gRPC server error: {:?}", e);
+                }
+            })
+        };
+
+        // Start P2P maintenance worker
+        self.p2p_manager.start_maintenance().await;
+
+        // Bootstrap if peer exists
+        if let Some(seed) = self.config.bootstrap_peer.clone() {
+            let seed_addr: std::net::SocketAddr = seed
+                .parse()
+                .map_err(|e| NetworkError::Config(format!("Invalid seed address: {}", e)))?;
+            self.p2p_manager.bootstrap(seed_addr).await?;
+        }
 
         info!("Network node started successfully");
 
         // Wait for shutdown signal
         tokio::select! {
-            result = server_handle => {
+            result = http_server_handle => {
                 match result {
                     Ok(_) => info!("HTTP server stopped gracefully"),
                     Err(e) => error!("HTTP server error: {:?}", e),
                 }
+            }
+            _ = grpc_server_handle => {
+                info!("gRPC server stopped");
             }
             _ = shutdown_signal => {
                 info!("Shutdown signal received, initiating graceful shutdown");
@@ -103,7 +184,10 @@ impl NetworkNode {
 
         // Step 2: Wait for active operations to finish (grace period)
         let grace_period = self.config.shutdown_grace_period;
-        info!("Waiting for active operations to finish ({} seconds)...", grace_period.as_secs());
+        info!(
+            "Waiting for active operations to finish ({} seconds)...",
+            grace_period.as_secs()
+        );
 
         let shutdown_result = timeout(grace_period, async {
             // Wait for all active HTTP connections to complete
@@ -113,7 +197,8 @@ impl NetworkNode {
             self.wait_for_database_operations().await?;
 
             Ok::<(), NetworkError>(())
-        }).await;
+        })
+        .await;
 
         match shutdown_result {
             Ok(Ok(())) => {
@@ -142,11 +227,11 @@ impl NetworkNode {
     /// Wait for database operations to complete
     async fn wait_for_database_operations(&self) -> Result<(), NetworkError> {
         let pool = self.connection_pool.read().await;
-        
+
         // Wait for all active connections to become idle
         let mut attempts = 0;
         let max_attempts = 30; // 30 seconds with 1-second intervals
-        
+
         while attempts < max_attempts {
             let active_connections = pool.active_connections();
             if active_connections == 0 {
@@ -155,7 +240,10 @@ impl NetworkNode {
             }
 
             if attempts % 5 == 0 {
-                info!("Waiting for {} active database connections to complete...", active_connections);
+                info!(
+                    "Waiting for {} active database connections to complete...",
+                    active_connections
+                );
             }
 
             tokio::time::sleep(Duration::from_secs(1)).await;
@@ -176,6 +264,11 @@ impl NetworkNode {
         info!("All database connections closed");
         Ok(())
     }
+    
+    /// Get a reference to the signing service
+    pub fn signing_service(&self) -> &Arc<SigningService> {
+        &self.signing_service
+    }
 }
 
 #[cfg(test)]
@@ -188,14 +281,29 @@ mod tests {
     async fn test_graceful_shutdown() {
         let config = NetworkConfig {
             bind_address: "127.0.0.1:0".to_string(),
+            grpc_bind_address: "127.0.0.1:0".to_string(),
+            gateway_bind_address: "127.0.0.1:0".to_string(),
             database_url: "sqlite::memory:".to_string(),
             database_config: DatabaseConfig::default(),
             shutdown_grace_period: Duration::from_secs(5),
             log_level: "info".to_string(),
+            bootstrap_peer: None,
+            tls_cert_path: None,
+            tls_key_path: None,
+            enable_gateway: false,
+            enable_reflection: false,
+            node_id: "test-node".to_string(),
+            otlp_endpoint: None,
+            jaeger_endpoint: None,
+            xray_endpoint: None,
+            tracing_enabled: false,
+            tracing_exporter: crate::config::TracingExporter::None,
+            signing_config: None,
+            cache_ttl_seconds: 3600,
         };
 
         let node = NetworkNode::new(config).await.unwrap();
-        
+
         // Simulate shutdown signal
         let node_clone = node.clone();
         tokio::spawn(async move {

@@ -1,10 +1,10 @@
-use std::sync::Arc;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{error, warn, info, debug};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use crate::error::{NetworkError, ContextualError, ErrorContext, Result};
+use crate::error::{ContextualError, ErrorContext, NetworkError, Result};
 
 /// Centralized error handling middleware
 pub struct ErrorMiddleware {
@@ -91,32 +91,41 @@ impl ErrorMiddleware {
     }
 
     /// Handle an error with centralized processing
-    pub async fn handle_error(&self, error: NetworkError, context: ErrorContext) -> ContextualError {
+    pub async fn handle_error(
+        &self,
+        error: NetworkError,
+        context: ErrorContext,
+    ) -> ContextualError {
         let request_id = context.request_id.clone();
         let error_record = self.create_error_record(&error, &context).await;
-        
+
         // Record error statistics
         self.record_error_stats(&error, &error_record).await;
-        
+
         // Check circuit breaker
         if self.config.enable_circuit_breaker {
             self.check_circuit_breaker(&context.component).await;
         }
-        
+
         // Log the error
         self.log_error(&error, &context, &error_record).await;
-        
+
         // Create contextual error
         let contextual_error = ContextualError::new(error, context);
-        
+
         // Send to monitoring/alerting systems
-        self.send_to_monitoring(&contextual_error, &error_record).await;
-        
+        self.send_to_monitoring(&contextual_error, &error_record)
+            .await;
+
         contextual_error
     }
 
     /// Create error record from error and context
-    async fn create_error_record(&self, error: &NetworkError, context: &ErrorContext) -> ErrorRecord {
+    async fn create_error_record(
+        &self,
+        error: &NetworkError,
+        context: &ErrorContext,
+    ) -> ErrorRecord {
         ErrorRecord {
             id: Uuid::new_v4().to_string(),
             error_type: error.error_code().to_string(),
@@ -132,20 +141,22 @@ impl ErrorMiddleware {
     /// Record error statistics
     async fn record_error_stats(&self, error: &NetworkError, error_record: &ErrorRecord) {
         let mut stats = self.error_stats.write().await;
-        
+
         stats.total_errors += 1;
         stats.last_updated = chrono::Utc::now();
-        
+
         // Count by error type
-        *stats.errors_by_type
+        *stats
+            .errors_by_type
             .entry(error.error_code().to_string())
             .or_insert(0) += 1;
-        
+
         // Count by component
-        *stats.errors_by_component
+        *stats
+            .errors_by_component
             .entry(error_record.component.clone())
             .or_insert(0) += 1;
-        
+
         // Add to recent errors (keep last 100)
         stats.recent_errors.push(error_record.clone());
         if stats.recent_errors.len() > 100 {
@@ -154,9 +165,14 @@ impl ErrorMiddleware {
     }
 
     /// Log error with appropriate level
-    async fn log_error(&self, error: &NetworkError, context: &ErrorContext, error_record: &ErrorRecord) {
+    async fn log_error(
+        &self,
+        error: &NetworkError,
+        context: &ErrorContext,
+        error_record: &ErrorRecord,
+    ) {
         let log_level = self.determine_log_level(error);
-        
+
         match log_level {
             LogLevel::Error => {
                 error!(
@@ -203,7 +219,7 @@ impl ErrorMiddleware {
                 );
             }
         }
-        
+
         // Log internal stack traces if enabled
         if self.config.log_internal_errors && error_record.stack_trace.is_some() {
             error!(
@@ -242,17 +258,18 @@ impl ErrorMiddleware {
     /// Check and update circuit breaker
     async fn check_circuit_breaker(&self, component: &str) {
         let mut breakers = self.circuit_breakers.write().await;
-        
-        let breaker = breakers.entry(component.to_string())
+
+        let breaker = breakers
+            .entry(component.to_string())
             .or_insert(CircuitBreaker {
                 state: CircuitBreakerState::Closed,
                 failure_count: 0,
                 last_failure_time: None,
                 success_count: 0,
             });
-        
+
         breaker.failure_count += 1;
-        
+
         match breaker.state {
             CircuitBreakerState::Closed => {
                 if breaker.failure_count >= self.config.circuit_breaker_threshold {
@@ -269,7 +286,9 @@ impl ErrorMiddleware {
                 // Check if timeout has passed
                 if let Some(last_failure) = breaker.last_failure_time {
                     let elapsed = chrono::Utc::now() - last_failure;
-                    if elapsed > chrono::Duration::from_std(self.config.circuit_breaker_timeout).unwrap() {
+                    if elapsed
+                        > chrono::Duration::from_std(self.config.circuit_breaker_timeout).unwrap()
+                    {
                         breaker.state = CircuitBreakerState::HalfOpen;
                         info!(
                             component = %component,
@@ -297,10 +316,10 @@ impl ErrorMiddleware {
         }
 
         let mut breakers = self.circuit_breakers.write().await;
-        
+
         if let Some(breaker) = breakers.get_mut(component) {
             breaker.success_count += 1;
-            
+
             match breaker.state {
                 CircuitBreakerState::HalfOpen => {
                     // Close circuit breaker after sufficient successes
@@ -326,7 +345,7 @@ impl ErrorMiddleware {
         }
 
         let breakers = self.circuit_breakers.read().await;
-        
+
         if let Some(breaker) = breakers.get(component) {
             matches!(breaker.state, CircuitBreakerState::Open)
         } else {
@@ -335,7 +354,11 @@ impl ErrorMiddleware {
     }
 
     /// Send error to monitoring systems
-    async fn send_to_monitoring(&self, contextual_error: &ContextualError, error_record: &ErrorRecord) {
+    async fn send_to_monitoring(
+        &self,
+        contextual_error: &ContextualError,
+        error_record: &ErrorRecord,
+    ) {
         // In a real implementation, this would send to monitoring systems
         // like Prometheus, Datadog, Sentry, etc.
         debug!(
@@ -364,12 +387,15 @@ impl ErrorMiddleware {
     /// Reset circuit breaker for a component
     pub async fn reset_circuit_breaker(&self, component: &str) {
         let mut breakers = self.circuit_breakers.write().await;
-        breakers.insert(component.to_string(), CircuitBreaker {
-            state: CircuitBreakerState::Closed,
-            failure_count: 0,
-            last_failure_time: None,
-            success_count: 0,
-        });
+        breakers.insert(
+            component.to_string(),
+            CircuitBreaker {
+                state: CircuitBreakerState::Closed,
+                failure_count: 0,
+                last_failure_time: None,
+                success_count: 0,
+            },
+        );
         info!(
             component = %component,
             "Circuit breaker reset"
@@ -418,12 +444,12 @@ mod tests {
     async fn test_error_middleware_basic() {
         let config = ErrorMiddlewareConfig::default();
         let middleware = ErrorMiddleware::new(config);
-        
+
         let error = NetworkError::Database(DatabaseError::ConnectionFailed("test".to_string()));
         let context = ErrorContext::new("test_operation", "test_component");
-        
+
         let contextual_error = middleware.handle_error(error, context).await;
-        
+
         // Check that error was recorded
         let stats = middleware.get_error_stats().await;
         assert_eq!(stats.total_errors, 1);
@@ -439,25 +465,26 @@ mod tests {
             ..Default::default()
         };
         let middleware = ErrorMiddleware::new(config);
-        
+
         let component = "test_component";
-        
+
         // Should not be open initially
         assert!(!middleware.is_circuit_breaker_open(component).await);
-        
+
         // Trigger errors to open circuit breaker
         for i in 0..3 {
-            let error = NetworkError::Database(DatabaseError::ConnectionFailed(format!("test {}", i)));
+            let error =
+                NetworkError::Database(DatabaseError::ConnectionFailed(format!("test {}", i)));
             let context = ErrorContext::new("test_operation", component);
             middleware.handle_error(error, context).await;
         }
-        
+
         // Should be open now
         assert!(middleware.is_circuit_breaker_open(component).await);
-        
+
         // Reset circuit breaker
         middleware.reset_circuit_breaker(component).await;
-        
+
         // Should not be open anymore
         assert!(!middleware.is_circuit_breaker_open(component).await);
     }
@@ -465,14 +492,14 @@ mod tests {
     #[tokio::test]
     async fn test_error_stats() {
         let middleware = ErrorMiddleware::new(ErrorMiddlewareConfig::default());
-        
+
         // Generate some errors
         for i in 0..5 {
             let error = NetworkError::Validation(format!("validation error {}", i));
             let context = ErrorContext::new("test_operation", "test_component");
             middleware.handle_error(error, context).await;
         }
-        
+
         let stats = middleware.get_error_stats().await;
         assert_eq!(stats.total_errors, 5);
         assert_eq!(stats.errors_by_type.get("VALIDATION_ERROR"), Some(&5));

@@ -31,6 +31,24 @@ pub enum NetworkError {
 
     #[error("Internal error: {0}")]
     Internal(String),
+
+    #[error("Cryptographic error: {0}")]
+    Crypto(String),
+
+    #[error("KMS error: {0}")]
+    Kms(String),
+
+    #[error("KMS timeout: {0}")]
+    KmsTimeout(String),
+
+    #[error("KMS rate limit: {0}")]
+    KmsRateLimit(String),
+
+    #[error("Signer error: {0}")]
+    Signer(String),
+
+    #[error("Not implemented: {0}")]
+    NotImplemented(String),
 }
 
 #[derive(Error, Debug)]
@@ -83,6 +101,12 @@ impl NetworkError {
             NetworkError::ShutdownTimeout => false,
             NetworkError::Cancelled => false,
             NetworkError::Internal(_) => false,
+            NetworkError::Crypto(_) => false,
+            NetworkError::Kms(_) => true,
+            NetworkError::KmsTimeout(_) => true,
+            NetworkError::KmsRateLimit(_) => true,
+            NetworkError::Signer(_) => false,
+            NetworkError::NotImplemented(_) => false,
         }
     }
 
@@ -99,6 +123,12 @@ impl NetworkError {
             NetworkError::ShutdownTimeout => "SHUTDOWN_TIMEOUT",
             NetworkError::Cancelled => "CANCELLED",
             NetworkError::Internal(_) => "INTERNAL_ERROR",
+            NetworkError::Crypto(_) => "CRYPTO_ERROR",
+            NetworkError::Kms(_) => "KMS_ERROR",
+            NetworkError::KmsTimeout(_) => "KMS_TIMEOUT",
+            NetworkError::KmsRateLimit(_) => "KMS_RATE_LIMIT",
+            NetworkError::Signer(_) => "SIGNER_ERROR",
+            NetworkError::NotImplemented(_) => "NOT_IMPLEMENTED",
         }
     }
 
@@ -115,6 +145,12 @@ impl NetworkError {
             NetworkError::ShutdownTimeout => 503,
             NetworkError::Cancelled => 503,
             NetworkError::Internal(_) => 500,
+            NetworkError::Crypto(_) => 400,
+            NetworkError::Kms(_) => 502,
+            NetworkError::KmsTimeout(_) => 504,
+            NetworkError::KmsRateLimit(_) => 429,
+            NetworkError::Signer(_) => 500,
+            NetworkError::NotImplemented(_) => 501,
         }
     }
 }

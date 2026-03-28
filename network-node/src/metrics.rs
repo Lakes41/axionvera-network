@@ -155,15 +155,15 @@ mod tests {
     #[test]
     fn test_metrics_collector() {
         let collector = MetricsCollector::new();
-        
+
         assert_eq!(collector.get_total_requests(), 0);
         assert_eq!(collector.get_active_connections(), 0);
         assert_eq!(collector.get_total_errors(), 0);
-        
+
         collector.increment_requests();
         collector.set_active_connections(5);
         collector.increment_errors();
-        
+
         assert_eq!(collector.get_total_requests(), 1);
         assert_eq!(collector.get_active_connections(), 5);
         assert_eq!(collector.get_total_errors(), 1);

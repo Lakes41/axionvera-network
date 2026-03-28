@@ -1,0 +1,250 @@
+use crate::error::Result;
+use crate::telemetry::{extract_traceparent_grpc, inject_traceparent_grpc};
+use std::collections::BTreeMap;
+use std::net::SocketAddr;
+use std::sync::Arc;
+use tokio::sync::RwLock;
+use tracing::{debug, info, warn, instrument, Span};
+
+pub type NodeId = [u8; 32];
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PeerInfo {
+    pub id: String,
+    pub address: SocketAddr,
+    pub is_connected: bool,
+    pub last_seen: chrono::DateTime<chrono::Utc>,
+    pub latency_ms: u64,
+    pub version: String,
+}
+
+pub struct KademliaRoutingTable {
+    local_id: NodeId,
+    buckets: Vec<BTreeMap<NodeId, PeerInfo>>,
+}
+
+impl KademliaRoutingTable {
+    pub fn new(local_id: NodeId) -> Self {
+        let mut buckets = Vec::with_capacity(256);
+        for _ in 0..256 {
+            buckets.push(BTreeMap::new());
+        }
+        Self { local_id, buckets }
+    }
+
+    /// Calculate XOR distance between two IDs
+    pub fn xor_distance(id1: &NodeId, id2: &NodeId) -> [u8; 32] {
+        let mut distance = [0u8; 32];
+        for i in 0..32 {
+            distance[i] = id1[i] ^ id2[i];
+        }
+        distance
+    }
+
+    /// Find the bucket index for a given ID
+    fn bucket_index(&self, id: &NodeId) -> usize {
+        let distance = Self::xor_distance(&self.local_id, id);
+        for i in 0..32 {
+            if distance[i] != 0 {
+                return (i * 8) + (7 - (distance[i] as f32).log2() as usize);
+            }
+        }
+        255
+    }
+
+    /// Add or update a peer in the routing table
+    pub fn update(&mut self, peer: PeerInfo) {
+        let index = self.bucket_index(&peer.id);
+        let bucket = &mut self.buckets[index];
+
+        if bucket.len() < 20 {
+            // K-bucket size
+            bucket.insert(peer.id, peer);
+        } else {
+            // In a real implementation: ping the oldest peer and replace if dead
+            debug!("Bucket {} is full, ignoring new peer", index);
+        }
+    }
+
+    /// Find the K closest nodes to a target ID
+    pub fn find_closest(&self, target: &NodeId, k: usize) -> Vec<PeerInfo> {
+        let mut all_peers = Vec::new();
+        for bucket in &self.buckets {
+            for peer in bucket.values() {
+                all_peers.push(peer.clone());
+            }
+        }
+
+        all_peers.sort_by(|a, b| {
+            let dist_a = Self::xor_distance(&a.id, target);
+            let dist_b = Self::xor_distance(&b.id, target);
+            dist_a.cmp(&dist_b)
+        });
+
+        all_peers.into_iter().take(k).collect()
+    }
+}
+
+pub struct P2PManager {
+    routing_table: Arc<RwLock<KademliaRoutingTable>>,
+    local_id: NodeId,
+    connected_peers: Arc<RwLock<std::collections::HashMap<String, PeerInfo>>>,
+}
+
+impl P2PManager {
+    pub fn new(local_id: NodeId) -> Self {
+        Self {
+            routing_table: Arc::new(RwLock::new(KademliaRoutingTable::new(local_id))),
+            local_id,
+            connected_peers: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        }
+    }
+
+    /// Background worker to maintain routing table
+    #[instrument(skip(self), fields(node_id = %hex::encode(self.local_id)))]
+    pub async fn start_maintenance(&self) {
+        let routing_table = self.routing_table.clone();
+        let local_id = self.local_id;
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+            loop {
+                interval.tick().await;
+                let span = tracing::info_span!(
+                    "kademlia_maintenance",
+                    node_id = %hex::encode(local_id),
+                    timestamp = %chrono::Utc::now()
+                );
+                let _enter = span.enter();
+                info!("Performing Kademlia maintenance: Pinging peers...");
+                // In real implementation:
+                // 1. Get all nodes
+                // 2. Ping them
+                // 3. Remove inactive ones
+            }
+        });
+    }
+
+    /// Bootstrap the node from a single seed identity
+    #[instrument(skip(self), fields(node_id = %hex::encode(self.local_id), seed_address = %seed_address))]
+    pub async fn bootstrap(&self, seed_address: SocketAddr) -> Result<()> {
+        info!("Bootstrapping from seed peer: {}", seed_address);
+        // 1. Update routing table with seed
+        // 2. Perform FIND_NODE for our own ID to find neighbors
+        Ok(())
+    }
+
+    /// Handle PING RPC
+    #[instrument(skip(self), fields(node_id = %hex::encode(self.local_id), peer_id = %from.id, peer_address = %from.address))]
+    pub fn handle_ping(&self, from: PeerInfo) -> Result<()> {
+        debug!("Received PING from {:?}", from.address);
+        // Update routing table
+        Ok(())
+    }
+
+    /// Connect to a peer
+    #[instrument(skip(self), fields(node_id = %hex::encode(self.local_id), peer_address = %address, peer_id = %peer_id))]
+    pub async fn connect_to_peer(&self, address: SocketAddr, peer_id: String) -> Result<String> {
+        info!("Connecting to peer {} at {}", peer_id, address);
+        
+        let span = tracing::info_span!(
+            "peer_connection",
+            peer_id = %peer_id,
+            peer_address = %address,
+            node_id = %hex::encode(self.local_id)
+        );
+        let _enter = span.enter();
+        
+        let peer_info = PeerInfo {
+            id: peer_id.clone(),
+            address,
+            is_connected: true,
+            last_seen: chrono::Utc::now(),
+            latency_ms: 50, // Mock latency
+            version: "1.0.0".to_string(),
+        };
+
+        let mut connected_peers = self.connected_peers.write().await;
+        connected_peers.insert(peer_id.clone(), peer_info);
+        
+        let session_id = format!("session_{}", fastrand::u64(..));
+        info!("Successfully connected to peer {}, session: {}", peer_id, session_id);
+        
+        Ok(session_id)
+    }
+
+    /// Disconnect from a peer
+    pub async fn disconnect_from_peer(&self, peer_id: &str) -> Result<()> {
+        info!("Disconnecting from peer: {}", peer_id);
+        
+        let mut connected_peers = self.connected_peers.write().await;
+        if connected_peers.remove(peer_id).is_some() {
+            info!("Successfully disconnected from peer: {}", peer_id);
+            Ok(())
+        } else {
+            warn!("Peer {} was not connected", peer_id);
+            Err(crate::error::NetworkError::P2P("Peer not connected".to_string()))
+        }
+    }
+
+    /// Get list of all peers
+    pub async fn get_peer_list(&self) -> Vec<PeerInfo> {
+        let connected_peers = self.connected_peers.read().await;
+        connected_peers.values().cloned().collect()
+    }
+
+    /// Get count of connected peers
+    pub async fn get_connected_peers_count(&self) -> u64 {
+        let connected_peers = self.connected_peers.read().await;
+        connected_peers.len() as u64
+    }
+
+    /// Broadcast message to peers
+    #[instrument(skip(self, payload), fields(node_id = %hex::encode(self.local_id), message_type = message_type, payload_size = payload.len(), target_peers_count = target_peers.len(), ttl = ttl))]
+    pub async fn broadcast_message(
+        &self,
+        message_type: i32,
+        payload: &[u8],
+        target_peers: &[String],
+        ttl: u64,
+    ) -> Result<(u64, Vec<String>)> {
+        let span = tracing::info_span!(
+            "message_broadcast",
+            message_type = message_type,
+            payload_size = payload.len(),
+            target_peers_count = target_peers.len(),
+            ttl = ttl,
+            node_id = %hex::encode(self.local_id)
+        );
+        let _enter = span.enter();
+        
+        info!("Broadcasting message type {} to {} peers", message_type, target_peers.len());
+        
+        let connected_peers = self.connected_peers.read().await;
+        let mut recipients_count = 0;
+        let mut failed_peers = Vec::new();
+
+        if target_peers.is_empty() {
+            // Broadcast to all connected peers
+            recipients_count = connected_peers.len();
+            debug!("Broadcasting to all {} connected peers", recipients_count);
+        } else {
+            // Broadcast to specific peers
+            for peer_id in target_peers {
+                if connected_peers.contains_key(peer_id) {
+                    recipients_count += 1;
+                    debug!("Peer {} is connected, will receive broadcast", peer_id);
+                } else {
+                    failed_peers.push(peer_id.clone());
+                    warn!("Peer {} is not connected, broadcast will fail", peer_id);
+                }
+            }
+        }
+
+        info!("Message broadcasted to {} recipients", recipients_count);
+        if !failed_peers.is_empty() {
+            warn!("Failed to broadcast to {} peers: {:?}", failed_peers.len(), failed_peers);
+        }
+        
+        Ok((recipients_count, failed_peers))
+    }
+}

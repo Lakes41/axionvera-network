@@ -4,9 +4,9 @@ use tokio::sync::RwLock;
 use tokio::time::timeout;
 use tracing::{error, info, warn};
 
-use crate::error::{NetworkError, Result};
 use crate::config::NetworkConfig;
 use crate::database::ConnectionPool;
+use crate::error::{NetworkError, Result};
 
 /// HTTP server for the network node
 pub struct HttpServer {
@@ -51,7 +51,8 @@ impl HttpServer {
                 active_connections,
                 connection_pool,
                 shutdown_rx,
-            ).await
+            )
+            .await
         });
 
         Ok(handle)
@@ -121,7 +122,7 @@ impl HttpServer {
         loop {
             // Check if we should accept new connections
             let accepting = *is_accepting.read().await;
-            
+
             if !accepting {
                 info!("Server no longer accepting new connections");
                 break;
@@ -159,7 +160,7 @@ impl HttpServer {
     ) {
         // Increment active connections
         *active_connections.write().await += 1;
-        
+
         info!("Handling simulated connection {}", conn_id);
 
         // Simulate connection work
@@ -176,7 +177,7 @@ impl HttpServer {
 
         // Decrement active connections
         *active_connections.write().await -= 1;
-        
+
         info!("Completed simulated connection {}", conn_id);
     }
 
@@ -210,14 +211,12 @@ pub async fn health_check() -> HealthStatus {
 }
 
 /// Ready check endpoint handler
-pub async fn ready_check(
-    connection_pool: Arc<RwLock<ConnectionPool>>,
-) -> ReadyStatus {
+pub async fn ready_check(connection_pool: Arc<RwLock<ConnectionPool>>) -> ReadyStatus {
     let pool = connection_pool.read().await;
-    
+
     let database_healthy = pool.health_check().await.unwrap_or(false);
     let active_connections = pool.active_connections().await;
-    
+
     ReadyStatus {
         ready: database_healthy && active_connections > 0,
         database_healthy,
@@ -260,14 +259,14 @@ mod tests {
         };
 
         let connection_pool = Arc::new(RwLock::new(
-            ConnectionPool::new("sqlite::memory:").await.unwrap()
+            ConnectionPool::new("sqlite::memory:").await.unwrap(),
         ));
 
         let mut server = HttpServer::new(config.clone(), connection_pool.clone());
-        
+
         // Start server
         let handle = server.start().await.unwrap();
-        
+
         // Check initial stats
         let stats = server.get_stats().await;
         assert!(stats.is_accepting_connections);
@@ -275,7 +274,7 @@ mod tests {
 
         // Stop accepting new connections
         server.stop_accepting_new_connections().await.unwrap();
-        
+
         let stats = server.get_stats().await;
         assert!(!stats.is_accepting_connections);
 
@@ -290,7 +289,7 @@ mod tests {
         assert_eq!(health.status, "healthy");
 
         let connection_pool = Arc::new(RwLock::new(
-            ConnectionPool::new("sqlite::memory:").await.unwrap()
+            ConnectionPool::new("sqlite::memory:").await.unwrap(),
         ));
 
         let ready = ready_check(connection_pool).await;
