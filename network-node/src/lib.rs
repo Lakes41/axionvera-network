@@ -17,6 +17,7 @@ pub mod database;
 pub mod enhanced_server;
 pub mod error;
 pub mod error_middleware;
+pub mod grpc;
 pub mod metrics;
 pub mod p2p;
 pub mod server;
@@ -28,6 +29,7 @@ pub struct NetworkNode {
     config: NetworkConfig,
     connection_pool: Arc<RwLock<ConnectionPool>>,
     http_server: EnhancedHttpServer,
+    grpc_server: crate::grpc::server::GrpcServer,
     shutdown_handler: shutdown::ShutdownHandler,
     error_middleware: Arc<ErrorMiddleware>,
     metrics_collector: Arc<MetricsCollector>,
@@ -70,6 +72,14 @@ impl NetworkNode {
             p2p_manager.clone(),
         );
 
+        // Initialize gRPC server
+        let grpc_server = crate::grpc::server::GrpcServer::new(
+            config.clone(),
+            connection_pool.clone(),
+            state_trie.clone(),
+            p2p_manager.clone(),
+        );
+
         // Initialize shutdown handler
         let shutdown_handler = shutdown::ShutdownHandler::new(config.shutdown_grace_period);
 
@@ -77,6 +87,7 @@ impl NetworkNode {
             config,
             connection_pool,
             http_server,
+            grpc_server,
             shutdown_handler,
             error_middleware,
             metrics_collector,
@@ -93,7 +104,17 @@ impl NetworkNode {
         let shutdown_signal = self.shutdown_handler.start();
 
         // Start HTTP server
-        let server_handle = self.http_server.start().await?;
+        let http_server_handle = self.http_server.start().await?;
+
+        // Start gRPC server
+        let grpc_server_handle = {
+            let grpc_server = self.grpc_server.clone();
+            tokio::spawn(async move {
+                if let Err(e) = grpc_server.start().await {
+                    error!("gRPC server error: {:?}", e);
+                }
+            })
+        };
 
         // Start P2P maintenance worker
         self.p2p_manager.start_maintenance().await;
@@ -110,11 +131,14 @@ impl NetworkNode {
 
         // Wait for shutdown signal
         tokio::select! {
-            result = server_handle => {
+            result = http_server_handle => {
                 match result {
                     Ok(_) => info!("HTTP server stopped gracefully"),
                     Err(e) => error!("HTTP server error: {:?}", e),
                 }
+            }
+            _ = grpc_server_handle => {
+                info!("gRPC server stopped");
             }
             _ = shutdown_signal => {
                 info!("Shutdown signal received, initiating graceful shutdown");

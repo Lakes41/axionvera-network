@@ -4,11 +4,17 @@ use std::time::Duration;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkConfig {
     pub bind_address: String,
+    pub grpc_bind_address: String,
+    pub gateway_bind_address: String,
     pub database_url: String,
     pub database_config: DatabaseConfig,
     pub shutdown_grace_period: Duration,
     pub log_level: String,
     pub bootstrap_peer: Option<String>,
+    pub tls_cert_path: Option<String>,
+    pub tls_key_path: Option<String>,
+    pub enable_gateway: bool,
+    pub enable_reflection: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,11 +64,17 @@ impl NetworkConfig {
 
         Ok(Self {
             bind_address,
+            grpc_bind_address: std::env::var("GRPC_BIND_ADDRESS").unwrap_or_else(|_| "0.0.0.0:50051".to_string()),
+            gateway_bind_address: std::env::var("GATEWAY_BIND_ADDRESS").unwrap_or_else(|_| "0.0.0.0:8081".to_string()),
             database_url,
             database_config: DatabaseConfig::default(),
             shutdown_grace_period: Duration::from_secs(shutdown_grace_period_secs),
             log_level,
             bootstrap_peer: std::env::var("BOOTSTRAP_PEER").ok(),
+            tls_cert_path: std::env::var("TLS_CERT_PATH").ok(),
+            tls_key_path: std::env::var("TLS_KEY_PATH").ok(),
+            enable_gateway: std::env::var("ENABLE_GATEWAY").unwrap_or_else(|_| "true".to_string()).parse().unwrap_or(true),
+            enable_reflection: std::env::var("ENABLE_REFLECTION").unwrap_or_else(|_| "true".to_string()).parse().unwrap_or(true),
         })
     }
 }
