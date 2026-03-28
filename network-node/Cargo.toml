@@ -30,6 +30,7 @@ tower-http = "0.5"
 metrics = "0.21"
 metrics-exporter-prometheus = "0.12"
 prometheus = "0.13"
+redis = { version = "0.23", features = ["tokio-comp"] }
 
 [dev-dependencies]
 tempfile = "3.0"

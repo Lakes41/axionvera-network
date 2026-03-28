@@ -20,6 +20,7 @@ pub mod shutdown;
 pub mod error_middleware;
 pub mod enhanced_server;
 pub mod metrics;
+pub mod rate_limiter;
 
 /// Main network node application
 pub struct NetworkNode {

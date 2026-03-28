@@ -4,7 +4,7 @@ use tokio::sync::RwLock;
 use tokio::time::timeout;
 use tracing::{error, info, warn};
 use axum::{
-    extract::Request,
+    extract::{Request, State},
     http::StatusCode,
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -18,6 +18,7 @@ use crate::config::NetworkConfig;
 use crate::database::ConnectionPool;
 use crate::error_middleware::ErrorMiddleware;
 use crate::metrics::MetricsCollector;
+use crate::rate_limiter::RateLimiter;
 
 /// Enhanced HTTP server with error middleware
 pub struct EnhancedHttpServer {
@@ -59,6 +60,13 @@ impl EnhancedHttpServer {
         let connection_pool = self.connection_pool.clone();
         let error_middleware = self.error_middleware.clone();
         let metrics_collector = self.metrics_collector.clone();
+        // Initialize rate limiter (try Redis via REDIS_URL env, otherwise in-memory)
+        let redis_url = std::env::var("REDIS_URL").ok();
+        let rate_limit_per_minute = std::env::var("RATE_LIMIT_PER_MINUTE")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(100);
+        let rate_limiter = Arc::new(RateLimiter::new(redis_url, rate_limit_per_minute).await);
 
         // Create shutdown channel
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
@@ -87,6 +95,12 @@ impl EnhancedHttpServer {
             )
             .layer(
                 middleware::from_fn_with_state(
+                    rate_limiter.clone(),
+                    rate_limit_middleware,
+                )
+            )
+            .layer(
+                middleware::from_fn_with_state(
                     active_connections.clone(),
                     connection_tracker_middleware,
                 )
@@ -98,6 +112,7 @@ impl EnhancedHttpServer {
                 is_accepting,
                 active_connections,
                 metrics_collector,
+                rate_limiter: rate_limiter.clone(),
             });
 
         // Parse bind address
@@ -181,6 +196,7 @@ struct AppState {
     is_accepting: Arc<RwLock<bool>>,
     active_connections: Arc<RwLock<usize>>,
     metrics_collector: Arc<MetricsCollector>,
+        rate_limiter: Arc<RateLimiter>,
 }
 
 /// Error handler middleware
@@ -217,6 +233,38 @@ async fn error_handler_middleware(
     };
 
     Ok(response)
+}
+
+/// Rate-limit middleware: enforces per-IP limits and returns 429 when exceeded.
+async fn rate_limit_middleware(
+    State(rate_limiter): State<Arc<RateLimiter>>,
+    mut request: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    // Try to get client IP from headers typically set by proxies
+    let ip = request
+        .headers()
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .map(|s| s.trim().to_string())
+        .or_else(|| {
+            request
+                .headers()
+                .get("x-real-ip")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+
+    match rate_limiter.allow(&ip).await {
+        Ok(true) => Ok(next.run(request).await),
+        Ok(false) => Ok((StatusCode::TOO_MANY_REQUESTS, Json(json!({"error":"rate limit exceeded"}))).into_response()),
+        Err(e) => {
+            tracing::error!("Rate limiter error: {}", e);
+            Ok((StatusCode::INTERNAL_SERVER_ERROR, "rate limiter error").into_response())
+        }
+    }
 }
 
 /// Connection limiter middleware
