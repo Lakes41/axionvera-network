@@ -208,8 +208,8 @@ mod test {
         assert_eq!(vault.balance(&user), 250);
         assert_eq!(vault.total_deposits(), 250);
 
-        assert_eq!(deposit_token.balance(&user), 750);
-        assert_eq!(deposit_token.balance(&vault_id), 250);
+        assert_eq!(TokenClient::new(&e, &deposit_token_id).balance(&user), 750);
+        assert_eq!(TokenClient::new(&e, &deposit_token_id).balance(&vault_id), 250);
     }
 
     #[test]
@@ -247,9 +247,9 @@ mod test {
         assert_eq!(vault.claim_rewards(&alice), 100);
         assert_eq!(vault.claim_rewards(&bob), 300);
 
-        assert_eq!(reward_token.balance(&alice), 100);
-        assert_eq!(reward_token.balance(&bob), 300);
-        assert_eq!(reward_token.balance(&vault_id), 0);
+        assert_eq!(TokenClient::new(&e, &reward_token_id).balance(&alice), 100);
+        assert_eq!(TokenClient::new(&e, &reward_token_id).balance(&bob), 300);
+        assert_eq!(TokenClient::new(&e, &reward_token_id).balance(&vault_id), 0);
     }
 
     #[test]
