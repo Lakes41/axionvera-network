@@ -14,6 +14,7 @@ const PERSISTENT_TTL_EXTEND_TO: u32 = 10_000;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DataKey {
     Initialized,
+    ReentrancyGuard,
     Admin,
     DepositToken,
     RewardToken,
@@ -38,6 +39,25 @@ pub fn require_initialized(e: &Env) -> Result<(), VaultError> {
 
 pub fn set_initialized(e: &Env) {
     e.storage().instance().set(&DataKey::Initialized, &true);
+    bump_instance_ttl(e);
+}
+
+pub fn enter_non_reentrant(e: &Env) -> Result<(), VaultError> {
+    if e.storage()
+        .instance()
+        .get(&DataKey::ReentrancyGuard)
+        .unwrap_or(false)
+    {
+        return Err(VaultError::ReentrancyDetected);
+    }
+
+    e.storage().instance().set(&DataKey::ReentrancyGuard, &true);
+    bump_instance_ttl(e);
+    Ok(())
+}
+
+pub fn exit_non_reentrant(e: &Env) {
+    e.storage().instance().remove(&DataKey::ReentrancyGuard);
     bump_instance_ttl(e);
 }
 
@@ -110,7 +130,7 @@ pub fn get_user_balance(e: &Env, user: &Address) -> Result<i128, VaultError> {
     require_initialized(e)?;
     let key = DataKey::UserBalance(user.clone());
     let bal = e.storage().persistent().get(&key).unwrap_or(0_i128);
-    bump_persistent_ttl(e, &key);
+    bump_persistent_ttl_if_present(e, &key);
     Ok(bal)
 }
 
@@ -128,7 +148,7 @@ pub fn get_user_reward_index(e: &Env, user: &Address) -> Result<i128, VaultError
     require_initialized(e)?;
     let key = DataKey::UserRewardIndex(user.clone());
     let idx = e.storage().persistent().get(&key).unwrap_or(0_i128);
-    bump_persistent_ttl(e, &key);
+    bump_persistent_ttl_if_present(e, &key);
     Ok(idx)
 }
 
@@ -146,7 +166,7 @@ pub fn get_user_rewards(e: &Env, user: &Address) -> Result<i128, VaultError> {
     require_initialized(e)?;
     let key = DataKey::UserRewards(user.clone());
     let amt = e.storage().persistent().get(&key).unwrap_or(0_i128);
-    bump_persistent_ttl(e, &key);
+    bump_persistent_ttl_if_present(e, &key);
     Ok(amt)
 }
 
@@ -222,4 +242,10 @@ fn bump_persistent_ttl(e: &Env, key: &DataKey) {
     e.storage()
         .persistent()
         .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
+}
+
+fn bump_persistent_ttl_if_present(e: &Env, key: &DataKey) {
+    if e.storage().persistent().has(key) {
+        bump_persistent_ttl(e, key);
+    }
 }

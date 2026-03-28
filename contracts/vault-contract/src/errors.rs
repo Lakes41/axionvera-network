@@ -11,4 +11,8 @@ pub enum VaultError {
     InsufficientBalance = 5,
     MathOverflow = 6,
     NoDeposits = 7,
+    InvalidConfiguration = 8,
+    ReentrancyDetected = 9,
+    InvalidState = 10,
+    ZeroRewardIncrement = 11,
 }

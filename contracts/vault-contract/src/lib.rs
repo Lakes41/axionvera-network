@@ -29,6 +29,7 @@ impl VaultContract {
         }
 
         admin.require_auth();
+        validate_init_config(&e, &admin, &deposit_token, &reward_token)?;
 
         storage::set_initialized(&e);
         storage::set_admin(&e, &admin);
@@ -43,118 +44,120 @@ impl VaultContract {
 
     pub fn deposit(e: Env, from: Address, amount: i128) -> Result<(), VaultError> {
         storage::require_initialized(&e)?;
-        if amount <= 0 {
-            return Err(VaultError::InvalidAmount);
-        }
-
+        validate_positive_amount(amount)?;
         from.require_auth();
+        with_non_reentrant(&e, || {
+            storage::accrue_user_rewards(&e, &from)?;
 
-        storage::accrue_user_rewards(&e, &from)?;
+            let token_id = storage::get_deposit_token(&e)?;
+            let token = soroban_sdk::token::Client::new(&e, &token_id);
+            token.transfer(&from, &e.current_contract_address(), &amount);
 
-        let token_id = storage::get_deposit_token(&e)?;
-        let token = soroban_sdk::token::Client::new(&e, &token_id);
-        token.transfer(&from, &e.current_contract_address(), &amount);
+            let prev_balance = storage::get_user_balance(&e, &from)?;
+            let next_balance = prev_balance
+                .checked_add(amount)
+                .ok_or(VaultError::MathOverflow)?;
+            storage::set_user_balance(&e, &from, next_balance);
 
-        let prev_balance = storage::get_user_balance(&e, &from)?;
-        let next_balance = prev_balance
-            .checked_add(amount)
-            .ok_or(VaultError::MathOverflow)?;
-        storage::set_user_balance(&e, &from, next_balance);
+            let prev_total = storage::get_total_deposits(&e)?;
+            let next_total = prev_total
+                .checked_add(amount)
+                .ok_or(VaultError::MathOverflow)?;
+            storage::set_total_deposits(&e, next_total);
 
-        let prev_total = storage::get_total_deposits(&e)?;
-        let next_total = prev_total
-            .checked_add(amount)
-            .ok_or(VaultError::MathOverflow)?;
-        storage::set_total_deposits(&e, next_total);
-
-        events::emit_deposit(&e, from, amount, next_balance);
-        Ok(())
+            events::emit_deposit(&e, from, amount, next_balance);
+            Ok(())
+        })
     }
 
     pub fn withdraw(e: Env, to: Address, amount: i128) -> Result<(), VaultError> {
         storage::require_initialized(&e)?;
-        if amount <= 0 {
-            return Err(VaultError::InvalidAmount);
-        }
-
+        validate_positive_amount(amount)?;
         to.require_auth();
+        with_non_reentrant(&e, || {
+            storage::accrue_user_rewards(&e, &to)?;
 
-        storage::accrue_user_rewards(&e, &to)?;
+            let prev_balance = storage::get_user_balance(&e, &to)?;
+            if prev_balance < amount {
+                return Err(VaultError::InsufficientBalance);
+            }
+            let next_balance = prev_balance
+                .checked_sub(amount)
+                .ok_or(VaultError::MathOverflow)?;
+            storage::set_user_balance(&e, &to, next_balance);
 
-        let prev_balance = storage::get_user_balance(&e, &to)?;
-        if prev_balance < amount {
-            return Err(VaultError::InsufficientBalance);
-        }
-        let next_balance = prev_balance
-            .checked_sub(amount)
-            .ok_or(VaultError::MathOverflow)?;
-        storage::set_user_balance(&e, &to, next_balance);
+            let prev_total = storage::get_total_deposits(&e)?;
+            if prev_total < amount {
+                return Err(VaultError::InvalidState);
+            }
+            let next_total = prev_total
+                .checked_sub(amount)
+                .ok_or(VaultError::MathOverflow)?;
+            storage::set_total_deposits(&e, next_total);
 
-        let prev_total = storage::get_total_deposits(&e)?;
-        let next_total = prev_total
-            .checked_sub(amount)
-            .ok_or(VaultError::MathOverflow)?;
-        storage::set_total_deposits(&e, next_total);
+            let token_id = storage::get_deposit_token(&e)?;
+            let token = soroban_sdk::token::Client::new(&e, &token_id);
+            token.transfer(&e.current_contract_address(), &to, &amount);
 
-        let token_id = storage::get_deposit_token(&e)?;
-        let token = soroban_sdk::token::Client::new(&e, &token_id);
-        token.transfer(&e.current_contract_address(), &to, &amount);
-
-        events::emit_withdraw(&e, to, amount, next_balance);
-        Ok(())
+            events::emit_withdraw(&e, to, amount, next_balance);
+            Ok(())
+        })
     }
 
     pub fn distribute_rewards(e: Env, amount: i128) -> Result<i128, VaultError> {
         storage::require_initialized(&e)?;
-        if amount <= 0 {
-            return Err(VaultError::InvalidAmount);
-        }
+        validate_positive_amount(amount)?;
 
         let admin = storage::get_admin(&e)?;
         admin.require_auth();
+        with_non_reentrant(&e, || {
+            let total = storage::get_total_deposits(&e)?;
+            if total <= 0 {
+                return Err(VaultError::NoDeposits);
+            }
 
-        let total = storage::get_total_deposits(&e)?;
-        if total <= 0 {
-            return Err(VaultError::NoDeposits);
-        }
+            let increment = amount
+                .checked_mul(REWARD_INDEX_SCALE)
+                .ok_or(VaultError::MathOverflow)?
+                / total;
+            if increment <= 0 {
+                return Err(VaultError::ZeroRewardIncrement);
+            }
 
-        let reward_token_id = storage::get_reward_token(&e)?;
-        let reward_token = soroban_sdk::token::Client::new(&e, &reward_token_id);
-        reward_token.transfer(&admin, &e.current_contract_address(), &amount);
+            let reward_token_id = storage::get_reward_token(&e)?;
+            let reward_token = soroban_sdk::token::Client::new(&e, &reward_token_id);
+            reward_token.transfer(&admin, &e.current_contract_address(), &amount);
 
-        let increment = amount
-            .checked_mul(REWARD_INDEX_SCALE)
-            .ok_or(VaultError::MathOverflow)?
-            / total;
+            let prev_idx = storage::get_reward_index(&e)?;
+            let next_idx = prev_idx
+                .checked_add(increment)
+                .ok_or(VaultError::MathOverflow)?;
+            storage::set_reward_index(&e, next_idx);
 
-        let prev_idx = storage::get_reward_index(&e)?;
-        let next_idx = prev_idx
-            .checked_add(increment)
-            .ok_or(VaultError::MathOverflow)?;
-        storage::set_reward_index(&e, next_idx);
-
-        events::emit_distribute(&e, admin, amount, next_idx);
-        Ok(next_idx)
+            events::emit_distribute(&e, admin, amount, next_idx);
+            Ok(next_idx)
+        })
     }
 
     pub fn claim_rewards(e: Env, user: Address) -> Result<i128, VaultError> {
         storage::require_initialized(&e)?;
         user.require_auth();
+        with_non_reentrant(&e, || {
+            storage::accrue_user_rewards(&e, &user)?;
+            let amt = storage::get_user_rewards(&e, &user)?;
+            if amt <= 0 {
+                return Ok(0);
+            }
 
-        storage::accrue_user_rewards(&e, &user)?;
-        let amt = storage::get_user_rewards(&e, &user)?;
-        if amt <= 0 {
-            return Ok(0);
-        }
+            storage::set_user_rewards(&e, &user, 0);
 
-        storage::set_user_rewards(&e, &user, 0);
+            let reward_token_id = storage::get_reward_token(&e)?;
+            let reward_token = soroban_sdk::token::Client::new(&e, &reward_token_id);
+            reward_token.transfer(&e.current_contract_address(), &user, &amt);
 
-        let reward_token_id = storage::get_reward_token(&e)?;
-        let reward_token = soroban_sdk::token::Client::new(&e, &reward_token_id);
-        reward_token.transfer(&e.current_contract_address(), &user, &amt);
-
-        events::emit_claim(&e, user, amt);
-        Ok(amt)
+            events::emit_claim(&e, user, amt);
+            Ok(amt)
+        })
     }
 
     pub fn balance(e: Env, user: Address) -> Result<i128, VaultError> {
@@ -186,6 +189,37 @@ impl VaultContract {
     }
 }
 
+fn validate_positive_amount(amount: i128) -> Result<(), VaultError> {
+    if amount <= 0 {
+        return Err(VaultError::InvalidAmount);
+    }
+    Ok(())
+}
+
+fn validate_init_config(
+    e: &Env,
+    admin: &Address,
+    deposit_token: &Address,
+    reward_token: &Address,
+) -> Result<(), VaultError> {
+    let contract = e.current_contract_address();
+    if admin == &contract || deposit_token == &contract || reward_token == &contract {
+        return Err(VaultError::InvalidConfiguration);
+    }
+
+    Ok(())
+}
+
+fn with_non_reentrant<T, F>(e: &Env, f: F) -> Result<T, VaultError>
+where
+    F: FnOnce() -> Result<T, VaultError>,
+{
+    storage::enter_non_reentrant(e)?;
+    let result = f();
+    storage::exit_non_reentrant(e);
+    result
+}
+
 // TODO(reward-optimization): Consider a higher precision / rounding strategy for small totals.
 // TODO(gas): Consider merging per-user keys (balance/index/rewards) into a single struct to reduce reads.
 // TODO(security): Consider adding pausability or per-user deposit caps.
@@ -196,8 +230,7 @@ impl VaultContract {
 mod test {
     use super::*;
     use soroban_sdk::testutils::Address as _;
-    use soroban_sdk::token::StellarAssetClient;
-    use soroban_sdk::Error;
+    use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
 
     #[test]
     fn deposit_withdraw_round_trip() {
@@ -210,8 +243,9 @@ mod test {
         let deposit_token_id = e.register_stellar_asset_contract(admin.clone());
         let reward_token_id = e.register_stellar_asset_contract(admin.clone());
 
-        let deposit_token = StellarAssetClient::new(&e, &deposit_token_id);
-        deposit_token.mint(&user, &1_000);
+        let deposit_token_admin = StellarAssetClient::new(&e, &deposit_token_id);
+        let deposit_token = TokenClient::new(&e, &deposit_token_id);
+        deposit_token_admin.mint(&user, &1_000);
 
         let vault_id = e.register_contract(None, VaultContract);
         let vault = VaultContractClient::new(&e, &vault_id);
@@ -242,12 +276,13 @@ mod test {
         let deposit_token_id = e.register_stellar_asset_contract(admin.clone());
         let reward_token_id = e.register_stellar_asset_contract(admin.clone());
 
-        let deposit_token = StellarAssetClient::new(&e, &deposit_token_id);
-        let reward_token = StellarAssetClient::new(&e, &reward_token_id);
+        let deposit_token_admin = StellarAssetClient::new(&e, &deposit_token_id);
+        let reward_token_admin = StellarAssetClient::new(&e, &reward_token_id);
+        let reward_token = TokenClient::new(&e, &reward_token_id);
 
-        deposit_token.mint(&alice, &1_000);
-        deposit_token.mint(&bob, &1_000);
-        reward_token.mint(&admin, &1_000);
+        deposit_token_admin.mint(&alice, &1_000);
+        deposit_token_admin.mint(&bob, &1_000);
+        reward_token_admin.mint(&admin, &1_000);
 
         let vault_id = e.register_contract(None, VaultContract);
         let vault = VaultContractClient::new(&e, &vault_id);
@@ -280,30 +315,21 @@ mod test {
         let deposit_token_id = e.register_stellar_asset_contract(admin.clone());
         let reward_token_id = e.register_stellar_asset_contract(admin.clone());
 
-        let deposit_token = StellarAssetClient::new(&e, &deposit_token_id);
-        deposit_token.mint(&user, &1_000);
+        let deposit_token_admin = StellarAssetClient::new(&e, &deposit_token_id);
+        deposit_token_admin.mint(&user, &1_000);
 
         let vault_id = e.register_contract(None, VaultContract);
         let vault = VaultContractClient::new(&e, &vault_id);
         vault.initialize(&admin, &deposit_token_id, &reward_token_id);
 
         let err = vault.try_deposit(&user, &0).unwrap_err();
-        assert_eq!(
-            err,
-            Error::from_contract_error(VaultError::InvalidAmount as u32)
-        );
+        assert_eq!(err, Ok(VaultError::InvalidAmount));
 
         let err = vault.try_withdraw(&user, &0).unwrap_err();
-        assert_eq!(
-            err,
-            Error::from_contract_error(VaultError::InvalidAmount as u32)
-        );
+        assert_eq!(err, Ok(VaultError::InvalidAmount));
 
         let err = vault.try_distribute_rewards(&0).unwrap_err();
-        assert_eq!(
-            err,
-            Error::from_contract_error(VaultError::InvalidAmount as u32)
-        );
+        assert_eq!(err, Ok(VaultError::InvalidAmount));
     }
 
     #[test]
@@ -317,8 +343,8 @@ mod test {
         let deposit_token_id = e.register_stellar_asset_contract(admin.clone());
         let reward_token_id = e.register_stellar_asset_contract(admin.clone());
 
-        let deposit_token = StellarAssetClient::new(&e, &deposit_token_id);
-        deposit_token.mint(&user, &500);
+        let deposit_token_admin = StellarAssetClient::new(&e, &deposit_token_id);
+        deposit_token_admin.mint(&user, &500);
 
         let vault_id = e.register_contract(None, VaultContract);
         let vault = VaultContractClient::new(&e, &vault_id);
@@ -327,10 +353,7 @@ mod test {
         vault.deposit(&user, &200);
 
         let err = vault.try_withdraw(&user, &201).unwrap_err();
-        assert_eq!(
-            err,
-            Error::from_contract_error(VaultError::InsufficientBalance as u32)
-        );
+        assert_eq!(err, Ok(VaultError::InsufficientBalance));
     }
 
     #[test]
@@ -343,18 +366,15 @@ mod test {
         let deposit_token_id = e.register_stellar_asset_contract(admin.clone());
         let reward_token_id = e.register_stellar_asset_contract(admin.clone());
 
-        let reward_token = StellarAssetClient::new(&e, &reward_token_id);
-        reward_token.mint(&admin, &1_000);
+        let reward_token_admin = StellarAssetClient::new(&e, &reward_token_id);
+        reward_token_admin.mint(&admin, &1_000);
 
         let vault_id = e.register_contract(None, VaultContract);
         let vault = VaultContractClient::new(&e, &vault_id);
         vault.initialize(&admin, &deposit_token_id, &reward_token_id);
 
         let err = vault.try_distribute_rewards(&100).unwrap_err();
-        assert_eq!(
-            err,
-            Error::from_contract_error(VaultError::NoDeposits as u32)
-        );
+        assert_eq!(err, Ok(VaultError::NoDeposits));
     }
 
     #[test]
@@ -373,9 +393,45 @@ mod test {
         let err = vault
             .try_initialize(&admin, &deposit_token_id, &reward_token_id)
             .unwrap_err();
-        assert_eq!(
-            err,
-            Error::from_contract_error(VaultError::AlreadyInitialized as u32)
-        );
+        assert_eq!(err, Ok(VaultError::AlreadyInitialized));
+    }
+
+    #[test]
+    fn rejects_invalid_initialization_configuration() {
+        let e = Env::default();
+        e.mock_all_auths();
+
+        let admin = Address::generate(&e);
+        let vault_id = e.register_contract(None, VaultContract);
+        let vault = VaultContractClient::new(&e, &vault_id);
+
+        let err = vault.try_initialize(&admin, &vault_id, &admin).unwrap_err();
+        assert_eq!(err, Ok(VaultError::InvalidConfiguration));
+    }
+
+    #[test]
+    fn distribution_rejects_zero_index_increment() {
+        let e = Env::default();
+        e.mock_all_auths();
+
+        let admin = Address::generate(&e);
+        let user = Address::generate(&e);
+
+        let deposit_token_id = e.register_stellar_asset_contract(admin.clone());
+        let reward_token_id = e.register_stellar_asset_contract(admin.clone());
+
+        let deposit_token_admin = StellarAssetClient::new(&e, &deposit_token_id);
+        let reward_token_admin = StellarAssetClient::new(&e, &reward_token_id);
+        let oversized_total = REWARD_INDEX_SCALE + 1;
+        deposit_token_admin.mint(&user, &oversized_total);
+        reward_token_admin.mint(&admin, &1_000);
+
+        let vault_id = e.register_contract(None, VaultContract);
+        let vault = VaultContractClient::new(&e, &vault_id);
+        vault.initialize(&admin, &deposit_token_id, &reward_token_id);
+        vault.deposit(&user, &oversized_total);
+
+        let err = vault.try_distribute_rewards(&1).unwrap_err();
+        assert_eq!(err, Ok(VaultError::ZeroRewardIncrement));
     }
 }
