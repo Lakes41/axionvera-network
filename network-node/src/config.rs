@@ -3,6 +3,48 @@ use crate::signing::SignerConfig;
 use std::time::Duration;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HorizonProvider {
+    pub url: String,
+    pub name: String,
+    pub priority: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HorizonConfig {
+    pub providers: Vec<HorizonProvider>,
+    pub health_check_interval_seconds: u64,
+    pub circuit_breaker_failure_threshold: u8,
+    pub circuit_breaker_recovery_timeout_seconds: u64,
+}
+
+impl Default for HorizonConfig {
+    fn default() -> Self {
+        Self {
+            providers: vec![
+                HorizonProvider {
+                    url: "https://horizon.stellar.org".to_string(),
+                    name: "Stellar Public".to_string(),
+                    priority: 1,
+                },
+                HorizonProvider {
+                    url: "https://horizon-blockdaemon.stellar.ovh".to_string(),
+                    name: "Blockdaemon".to_string(),
+                    priority: 2,
+                },
+                HorizonProvider {
+                    url: "https://stellar-horizon.infura.io".to_string(),
+                    name: "Infura".to_string(),
+                    priority: 3,
+                },
+            ],
+            health_check_interval_seconds: 60,
+            circuit_breaker_failure_threshold: 3,
+            circuit_breaker_recovery_timeout_seconds: 300,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TracingExporter {
     Otlp,
     Jaeger,
@@ -34,6 +76,7 @@ pub struct NetworkConfig {
     pub cache_ttl_seconds: i64,
     /// Path to genesis JSON (`config/genesis.example.json`). See `GENESIS_CONFIG_PATH`.
     pub genesis_config_path: Option<String>,
+    pub horizon_config: HorizonConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -105,6 +148,15 @@ impl NetworkConfig {
 
         let genesis_config_path = std::env::var("GENESIS_CONFIG_PATH").ok();
 
+        let horizon_config = if let Ok(config_json) = std::env::var("HORIZON_CONFIG") {
+            serde_json::from_str(&config_json).unwrap_or_else(|e| {
+                tracing::warn!("Invalid HORIZON_CONFIG JSON, using default: {}", e);
+                HorizonConfig::default()
+            })
+        } else {
+            HorizonConfig::default()
+        };
+
         Ok(Self {
             bind_address,
             grpc_bind_address: std::env::var("GRPC_BIND_ADDRESS").unwrap_or_else(|_| "0.0.0.0:50051".to_string()),
@@ -127,6 +179,7 @@ impl NetworkConfig {
             signing_config: None,
             cache_ttl_seconds,
             genesis_config_path,
+            horizon_config,
         })
     }
 }

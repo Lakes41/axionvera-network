@@ -49,6 +49,9 @@ pub enum NetworkError {
 
     #[error("Not implemented: {0}")]
     NotImplemented(String),
+
+    #[error("Horizon client error: {0}")]
+    HorizonClient(String),
 }
 
 #[derive(Error, Debug)]
@@ -107,6 +110,7 @@ impl NetworkError {
             NetworkError::KmsRateLimit(_) => true,
             NetworkError::Signer(_) => false,
             NetworkError::NotImplemented(_) => false,
+            NetworkError::HorizonClient(_) => true,
         }
     }
 
@@ -129,6 +133,7 @@ impl NetworkError {
             NetworkError::KmsRateLimit(_) => "KMS_RATE_LIMIT",
             NetworkError::Signer(_) => "SIGNER_ERROR",
             NetworkError::NotImplemented(_) => "NOT_IMPLEMENTED",
+            NetworkError::HorizonClient(_) => "HORIZON_CLIENT_ERROR",
         }
     }
 
@@ -151,6 +156,7 @@ impl NetworkError {
             NetworkError::KmsRateLimit(_) => 429,
             NetworkError::Signer(_) => 500,
             NetworkError::NotImplemented(_) => 501,
+            NetworkError::HorizonClient(_) => 502,
         }
     }
 }

@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: axionvera-network
+  labels:
+    name: axionvera-network
+    environment: production

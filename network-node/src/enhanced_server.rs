@@ -19,6 +19,8 @@ use crate::error::{ContextualError, ErrorContext, NetworkError, Result};
 use crate::error_middleware::ErrorMiddleware;
 use crate::metrics::MetricsCollector;
 use crate::rate_limiter::RateLimiter;
+use crate::signing::SigningService;
+use crate::stellar_service::StellarService;
 
 /// Enhanced HTTP server with error middleware
 pub struct EnhancedHttpServer {
@@ -29,6 +31,7 @@ pub struct EnhancedHttpServer {
     state_trie: Arc<RwLock<crate::state_trie::StateTrie>>,
     p2p_manager: Arc<crate::p2p::P2PManager>,
     signing_service: Arc<SigningService>,
+    stellar_service: Arc<StellarService>,
     is_accepting_connections: Arc<RwLock<bool>>,
     active_connections: Arc<RwLock<usize>>,
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
@@ -44,6 +47,7 @@ impl EnhancedHttpServer {
         state_trie: Arc<RwLock<crate::state_trie::StateTrie>>,
         p2p_manager: Arc<crate::p2p::P2PManager>,
         signing_service: Arc<SigningService>,
+        stellar_service: Arc<StellarService>,
     ) -> Self {
         Self {
             config,
@@ -53,6 +57,7 @@ impl EnhancedHttpServer {
             state_trie,
             p2p_manager,
             signing_service,
+            stellar_service,
             is_accepting_connections: Arc::new(RwLock::new(true)),
             active_connections: Arc::new(RwLock::new(0)),
             shutdown_tx: None,
@@ -101,6 +106,10 @@ impl EnhancedHttpServer {
             )
             .route("/health/liveness", axum::routing::get(health_liveness))
             .route("/health/readiness", axum::routing::get(health_readiness))
+            .route("/stellar/account/:account_id", axum::routing::get(get_stellar_account))
+            .route("/stellar/ledger/latest", axum::routing::get(get_latest_ledger))
+            .route("/stellar/providers/status", axum::routing::get(get_horizon_providers_status))
+            .route("/stellar/providers/switch", axum::routing::post(switch_horizon_provider))
             .layer(
                 middleware::from_fn_with_state(
                     error_middleware.clone(),
@@ -133,6 +142,7 @@ impl EnhancedHttpServer {
                 active_connections,
                 metrics_collector,
                 rate_limiter: rate_limiter.clone(),
+                stellar_service: self.stellar_service.clone(),
             });
 
         // Parse bind address
@@ -217,7 +227,8 @@ struct AppState {
     is_accepting: Arc<RwLock<bool>>,
     active_connections: Arc<RwLock<usize>>,
     metrics_collector: Arc<MetricsCollector>,
-        rate_limiter: Arc<RateLimiter>,
+    rate_limiter: Arc<RateLimiter>,
+    stellar_service: Arc<StellarService>,
 }
 
 /// Error handler middleware
@@ -502,6 +513,92 @@ async fn p2p_ping(
     match state.p2p_manager.handle_ping(peer_info) {
         Ok(_) => StatusCode::OK.into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// Handler for getting Stellar account information
+async fn get_stellar_account(
+    State(state): State<AppState>,
+    axum::extract::Path(account_id): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    match state.stellar_service.get_account(&account_id).await {
+        Ok(account) => Json(account).into_response(),
+        Err(e) => (
+            StatusCode::from_u16(e.http_status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            Json(json!({
+                "error": e.error_code(),
+                "message": e.to_string()
+            }))
+        ).into_response(),
+    }
+}
+
+/// Handler for getting latest Stellar ledger
+async fn get_latest_ledger(
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    match state.stellar_service.get_latest_ledger().await {
+        Ok(ledger) => Json(ledger).into_response(),
+        Err(e) => (
+            StatusCode::from_u16(e.http_status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            Json(json!({
+                "error": e.error_code(),
+                "message": e.to_string()
+            }))
+        ).into_response(),
+    }
+}
+
+/// Handler for getting Horizon providers status
+async fn get_horizon_providers_status(
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    match state.stellar_service.get_provider_status().await {
+        Ok(providers) => Json(json!({
+            "providers": providers.iter().map(|p| {
+                json!({
+                    "name": p.provider.name,
+                    "url": p.provider.url,
+                    "priority": p.provider.priority,
+                    "is_healthy": p.is_healthy,
+                    "failure_count": p.failure_count,
+                    "circuit_state": format!("{:?}", p.circuit_state),
+                    "last_health_check": p.last_health_check.map(|t| t.elapsed().as_secs()),
+                })
+            }).collect::<Vec<_>>(),
+            "total_providers": providers.len(),
+            "healthy_providers": providers.iter().filter(|p| p.is_healthy).count(),
+        })).into_response(),
+        Err(e) => (
+            StatusCode::from_u16(e.http_status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            Json(json!({
+                "error": e.error_code(),
+                "message": e.to_string()
+            }))
+        ).into_response(),
+    }
+}
+
+/// Handler for switching Horizon provider
+async fn switch_horizon_provider(
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    match state.stellar_service.switch_provider().await {
+        Ok(provider) => Json(json!({
+            "message": "Successfully switched to backup provider",
+            "provider": {
+                "name": provider.name,
+                "url": provider.url,
+                "priority": provider.priority,
+            }
+        })).into_response(),
+        Err(e) => (
+            StatusCode::from_u16(e.http_status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            Json(json!({
+                "error": e.error_code(),
+                "message": e.to_string()
+            }))
+        ).into_response(),
     }
 }
 

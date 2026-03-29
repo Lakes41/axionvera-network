@@ -1,0 +1,188 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: axionvera-node
+  namespace: axionvera-network
+  labels:
+    app: axionvera-node
+    version: v1.0.0
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: axionvera-node
+  template:
+    metadata:
+      labels:
+        app: axionvera-node
+        version: v1.0.0
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+      - name: axionvera-node
+        image: axionvera-network:latest
+        imagePullPolicy: Always
+        ports:
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+        - name: rpc
+          containerPort: 8000
+          protocol: TCP
+        - name: p2p
+          containerPort: 9000
+          protocol: TCP
+        - name: metrics
+          containerPort: 8080
+          protocol: TCP
+        env:
+        - name: RUST_LOG
+          value: "info"
+        - name: METRICS_ENABLED
+          value: "true"
+        - name: METRICS_PORT
+          value: "8080"
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        resources:
+          limits:
+            cpu: "1000m"
+            memory: "2Gi"
+            ephemeral-storage: "1Gi"
+          requests:
+            cpu: "500m"
+            memory: "1Gi"
+            ephemeral-storage: "500Mi"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        volumeMounts:
+        - name: config
+          mountPath: /app/config
+          readOnly: true
+        - name: logs
+          mountPath: /app/logs
+      volumes:
+      - name: config
+        configMap:
+          name: axionvera-config
+      - name: logs
+        emptyDir: {}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        capabilities:
+          drop:
+          - ALL
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 30
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: axionvera-node-service
+  namespace: axionvera-network
+  labels:
+    app: axionvera-node
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+    prometheus.io/path: "/metrics"
+spec:
+  type: ClusterIP
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+    protocol: TCP
+  - name: rpc
+    port: 8000
+    targetPort: 8000
+    protocol: TCP
+  - name: p2p
+    port: 9000
+    targetPort: 9000
+    protocol: TCP
+  selector:
+    app: axionvera-node
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: axionvera-node-metrics
+  namespace: axionvera-network
+  labels:
+    app: axionvera-node
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+    prometheus.io/path: "/metrics"
+spec:
+  type: ClusterIP
+  ports:
+  - name: metrics
+    port: 8080
+    targetPort: 8080
+    protocol: TCP
+  selector:
+    app: axionvera-node
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: axionvera-config
+  namespace: axionvera-network
+data:
+  config.toml: |
+    [server]
+    host = "0.0.0.0"
+    port = 8080
+    
+    [rpc]
+    enabled = true
+    port = 8000
+    
+    [p2p]
+    enabled = true
+    port = 9000
+    bootstrap_nodes = []
+    
+    [metrics]
+    enabled = true
+    port = 8080
+    path = "/metrics"
+    
+    [logging]
+    level = "info"
+    format = "json"
+    
+    [transaction_queue]
+    max_size = 10000
+    batch_size = 100
+    timeout_ms = 5000

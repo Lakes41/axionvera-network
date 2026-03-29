@@ -10,8 +10,10 @@ use crate::database::ConnectionPool;
 use crate::enhanced_server::EnhancedHttpServer;
 use crate::error::NetworkError;
 use crate::error_middleware::{ErrorMiddleware, ErrorMiddlewareConfig};
+use crate::horizon_client::HorizonClient;
 use crate::metrics::MetricsCollector;
 use crate::signing::{SigningService, SignerFactory};
+use crate::stellar_service::StellarService;
 use std::path::Path;
 
 pub mod aws_kms_signer;
@@ -24,11 +26,13 @@ pub mod enhanced_server;
 pub mod error;
 pub mod error_middleware;
 pub mod grpc;
+pub mod horizon_client;
 pub mod metrics;
 pub mod p2p;
 pub mod rate_limiter;
 pub mod shutdown;
 pub mod signing;
+pub mod stellar_service;
 pub mod state_trie;
 pub mod telemetry;
 
@@ -44,6 +48,8 @@ pub struct NetworkNode {
     state_trie: Arc<RwLock<state_trie::StateTrie>>,
     p2p_manager: Arc<p2p::P2PManager>,
     signing_service: Arc<SigningService>,
+    horizon_client: Arc<HorizonClient>,
+    stellar_service: Arc<StellarService>,
 }
 
 impl NetworkNode {
@@ -92,6 +98,14 @@ impl NetworkNode {
         
         let signing_service = Arc::new(signing_service);
 
+        // Initialize Horizon client
+        let horizon_client = Arc::new(HorizonClient::new(config.horizon_config.clone()));
+        info!("Initialized Horizon client with {} providers", horizon_client.get_provider_statuses().await.len());
+
+        // Initialize Stellar service
+        let stellar_service = Arc::new(StellarService::new(horizon_client.clone()));
+        info!("Initialized Stellar service");
+
         let chain_parameters = Arc::new(RwLock::new(
             match &config.genesis_config_path {
                 Some(p) => crate::chain_params::ChainParameterRegistry::from_genesis_file(Path::new(p))
@@ -109,6 +123,7 @@ impl NetworkNode {
             state_trie.clone(),
             p2p_manager.clone(),
             signing_service.clone(),
+            stellar_service.clone(),
         );
 
         // Initialize gRPC server
@@ -135,6 +150,8 @@ impl NetworkNode {
             state_trie,
             p2p_manager,
             signing_service,
+            horizon_client,
+            stellar_service,
         })
     }
 
@@ -160,6 +177,10 @@ impl NetworkNode {
 
         // Start P2P maintenance worker
         self.p2p_manager.start_maintenance().await;
+
+        // Start Horizon health checker
+        let horizon_health_checker = self.horizon_client.clone().start_health_checker().await;
+        info!("Started Horizon health checker");
 
         // Bootstrap if peer exists
         if let Some(seed) = self.config.bootstrap_peer.clone() {
@@ -286,6 +307,16 @@ impl NetworkNode {
     pub fn signing_service(&self) -> &Arc<SigningService> {
         &self.signing_service
     }
+
+    /// Get a reference to the Horizon client
+    pub fn horizon_client(&self) -> &Arc<HorizonClient> {
+        &self.horizon_client
+    }
+
+    /// Get a reference to the Stellar service
+    pub fn stellar_service(&self) -> &Arc<StellarService> {
+        &self.stellar_service
+    }
 }
 
 #[cfg(test)]
@@ -318,6 +349,7 @@ mod tests {
             signing_config: None,
             cache_ttl_seconds: 3600,
             genesis_config_path: None,
+            horizon_config: crate::config::HorizonConfig::default(),
         };
 
         let node = NetworkNode::new(config).await.unwrap();

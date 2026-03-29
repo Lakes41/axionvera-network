@@ -1,0 +1,51 @@
+# Horizon API Configuration Example
+# This file shows how to configure multiple Horizon providers with fallback and load balancing
+
+# You can set the HORIZON_CONFIG environment variable with the following JSON structure:
+# export HORIZON_CONFIG='{"providers":[{"url":"https://horizon.stellar.org","name":"Stellar Public","priority":1},{"url":"https://horizon-blockdaemon.stellar.ovh","name":"Blockdaemon","priority":2},{"url":"https://stellar-horizon.infura.io","name":"Infura","priority":3}],"health_check_interval_seconds":60,"circuit_breaker_failure_threshold":3,"circuit_breaker_recovery_timeout_seconds":300}'
+
+{
+  "providers": [
+    {
+      "url": "https://horizon.stellar.org",
+      "name": "Stellar Public",
+      "priority": 1
+    },
+    {
+      "url": "https://horizon-blockdaemon.stellar.ovh", 
+      "name": "Blockdaemon",
+      "priority": 2
+    },
+    {
+      "url": "https://stellar-horizon.infura.io",
+      "name": "Infura", 
+      "priority": 3
+    },
+    {
+      "url": "https://horizon.stellar.technology",
+      "name": "Stellar Technology",
+      "priority": 4
+    }
+  ],
+  "health_check_interval_seconds": 60,
+  "circuit_breaker_failure_threshold": 3,
+  "circuit_breaker_recovery_timeout_seconds": 300
+}
+
+# Configuration Options:
+# - providers: Array of Horizon endpoint providers
+#   - url: The Horizon API endpoint URL
+#   - name: Human-readable name for logging
+#   - priority: Lower number = higher priority (primary provider)
+# - health_check_interval_seconds: How often to ping all providers (default: 60)
+# - circuit_breaker_failure_threshold: Number of failures before opening circuit (default: 3)
+# - circuit_breaker_recovery_timeout_seconds: How long to wait before trying recovery (default: 300)
+
+# Environment Variable Setup:
+# 1. Copy this configuration and set as environment variable:
+#    export HORIZON_CONFIG='$(cat horizon-config.json)'
+#
+# 2. Or add to your .env file:
+#    HORIZON_CONFIG='{"providers":[...],"health_check_interval_seconds":60,...}'
+#
+# 3. Restart the network node to apply changes
