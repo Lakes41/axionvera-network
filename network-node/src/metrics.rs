@@ -10,6 +10,7 @@ pub struct MetricsCollector {
     total_errors: AtomicU64,
     bytes_sent: AtomicU64,
     bytes_received: AtomicU64,
+    pending_transactions: AtomicU64,
 }
 
 impl MetricsCollector {
@@ -22,6 +23,7 @@ impl MetricsCollector {
             total_errors: AtomicU64::new(0),
             bytes_sent: AtomicU64::new(0),
             bytes_received: AtomicU64::new(0),
+            pending_transactions: AtomicU64::new(0),
         }
     }
 
@@ -60,6 +62,18 @@ impl MetricsCollector {
         histogram!("request_duration_seconds").record(duration_secs);
     }
 
+    /// Set pending transactions gauge
+    pub fn set_pending_transactions(&self, count: u64) {
+        self.pending_transactions.store(count, Ordering::Relaxed);
+        gauge!("axionvera_pending_transactions_total").set(count as f64);
+        gauge!("axionvera_transaction_queue_depth").set(count as f64);
+    }
+
+    /// Get pending transactions
+    pub fn get_pending_transactions(&self) -> u64 {
+        self.pending_transactions.load(Ordering::Relaxed)
+    }
+
     /// Get uptime in seconds
     pub fn uptime_secs(&self) -> u64 {
         self.start_time.elapsed().as_secs()
@@ -90,6 +104,11 @@ impl MetricsCollector {
         self.bytes_received.load(Ordering::Relaxed)
     }
 
+    /// Get pending transactions
+    pub fn get_pending_transactions(&self) -> u64 {
+        self.pending_transactions.load(Ordering::Relaxed)
+    }
+
     /// Get all metrics as Prometheus format string
     pub fn get_prometheus_metrics(&self) -> String {
         format!(
@@ -117,6 +136,14 @@ axionvera_bytes_sent_total {}
 # TYPE axionvera_bytes_received_total counter
 axionvera_bytes_received_total {}
 
+# HELP axionvera_pending_transactions_total Number of pending transactions in queue
+# TYPE axionvera_pending_transactions_total gauge
+axionvera_pending_transactions_total {}
+
+# HELP axionvera_transaction_queue_depth Current transaction queue depth
+# TYPE axionvera_transaction_queue_depth gauge
+axionvera_transaction_queue_depth {}
+
 # HELP process_memory_bytes Current memory usage in bytes
 # TYPE process_memory_bytes gauge
 process_memory_bytes {}
@@ -130,6 +157,8 @@ process_memory_bytes {}
             self.get_total_errors(),
             self.get_bytes_sent(),
             self.get_bytes_received(),
+            self.get_pending_transactions(),
+            self.get_pending_transactions(),
             self.get_process_memory(),
         )
     }
