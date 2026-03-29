@@ -46,6 +46,7 @@ opentelemetry_sdk = { version = "0.21", features = ["rt-tokio"] }
 tracing-opentelemetry = "0.22"
 aws-config = "1"
 aws-sdk-kms = "1"
+aws-sdk-secretsmanager = "1"
 aws-smithy-runtime = "1"
 aws-smithy-runtime-api = "1"
 aws-types = "1"
