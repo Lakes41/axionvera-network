@@ -72,6 +72,10 @@ What it does:
 - resets `total_deposits` and `reward_index` to `0`
 - emits an `init` event
 
+Security:
+- Fails with `AlreadyInitialized` if called twice.
+- Fails with `InvalidTokenConfiguration` if `deposit_token == reward_token`.
+- Requires `admin` authorization.
 Important rules:
 - can only run once
 - requires `admin` authorization
@@ -86,6 +90,14 @@ vault.initialize(&admin, &deposit_token_id, &reward_token_id);
 
 Moves deposit tokens from the user into the vault and increases their recorded vault balance.
 
+Validations:
+- `amount > 0`
+- Requires `from` authorization
+- Fails with `InsufficientBalance` if `from` does not hold enough `deposit_token`
+
+Accounting:
+- Accrues any pending rewards for `from` before changing their balance.
+- Rejects invalid transfers before mutating user reward snapshots or vault balances.
 Step-by-step:
 
 1. Confirms the contract is initialized.
@@ -115,6 +127,15 @@ Moves deposit tokens from the vault back to the user and reduces their recorded 
 
 Step-by-step:
 
+Validations:
+- `amount > 0`
+- Requires `to` authorization
+- Fails with `InsufficientBalance` if `amount > balance(to)`
+- Fails with `InsufficientContractBalance` if the vault cannot cover the token transfer
+
+Accounting:
+- Accrues any pending rewards for `to` before changing their balance.
+- Final state is only written after token transfer pre-checks succeed.
 1. Confirms the contract is initialized.
 2. Validates `amount > 0`.
 3. Requires authorization from `to`.
@@ -145,6 +166,11 @@ Transfers reward tokens from the admin into the contract and updates the global 
 
 Step-by-step:
 
+Validations:
+- `amount > 0`
+- Requires `admin` authorization
+- Fails with `NoDeposits` if `total_deposits == 0`
+- Fails with `InsufficientBalance` if `admin` does not hold enough `reward_token`
 1. Confirms the contract is initialized.
 2. Validates `amount > 0`.
 3. Requires admin authorization.
@@ -267,6 +293,14 @@ Fields:
 
 ## Errors
 
+- `AlreadyInitialized`: vault initialization can only happen once.
+- `NotInitialized`: the vault must be initialized before use.
+- `InvalidAmount`: token amounts must be greater than zero.
+- `InsufficientBalance`: the caller-facing token balance is lower than the requested amount.
+- `NoDeposits`: rewards cannot be distributed while `total_deposits == 0`.
+- `InvalidTokenConfiguration`: deposit and reward token addresses must be different.
+- `InsufficientContractBalance`: the vault does not hold enough tokens to complete the transfer.
+- `MathOverflow`: arithmetic overflow or underflow was detected while updating accounting.
 The contract can return the following errors from [errors.rs](/c:/Users/ADMIN/Desktop/remmy-drips/axionvera-network/contracts/vault-contract/src/errors.rs):
 
 - `AlreadyInitialized`
