@@ -46,14 +46,6 @@ pub fn is_initialized(e: &Env) -> bool {
     e.storage().instance().has(&DataKey::State)
 }
 
-pub fn require_initialized(e: &Env) -> Result<(), VaultError> {
-    if !is_initialized(e) {
-        return Err(StateError::NotInitialized.into());
-    }
-    bump_instance_ttl(e);
-    Ok(())
-}
-
 pub fn initialize_state(
     e: &Env,
     admin: &Address,
@@ -90,13 +82,15 @@ pub fn exit_non_reentrant(e: &Env) {
 }
 
 pub fn get_state(e: &Env) -> Result<VaultState, VaultError> {
-    require_initialized(e)?;
-    e.storage()
+    let state = e
+        .storage()
         .instance()
         .get(&DataKey::Admin)
         .ok_or_else(|| StateError::NotInitialized.into())
         .get(&DataKey::State)
-        .ok_or(VaultError::NotInitialized)
+        .ok_or(VaultError::NotInitialized)?;
+    bump_instance_ttl(e);
+    Ok(state)
 }
 
 pub fn set_state(e: &Env, state: &VaultState) {
@@ -136,18 +130,23 @@ pub fn get_reward_index(e: &Env) -> Result<i128, VaultError> {
 }
 
 pub fn get_user_position(e: &Env, user: &Address) -> Result<UserPosition, VaultError> {
-    require_initialized(e)?;
-    let key = DataKey::UserBalance(user.clone());
-    if let Some(bal) = e.storage().persistent().get(&key) {
-        bump_persistent_ttl(e, &key);
-        Ok(bal)
-    } else {
-        Ok(0_i128)
+    // Keep public behavior: user queries on an uninitialized contract must fail.
+    if !is_initialized(e) {
+        return Err(VaultError::NotInitialized);
     }
+    bump_instance_ttl(e);
+    Ok(get_user_position_unchecked(e, user))
+}
+
+fn get_user_position_unchecked(e: &Env, user: &Address) -> UserPosition {
     let key = DataKey::User(user.clone());
-    let bal = e.storage().persistent().get(&key).unwrap_or_default();
-    bump_persistent_ttl_if_present(e, &key);
-    Ok(bal)
+    let position = e.storage().persistent().get(&key);
+    if let Some(existing) = position {
+        bump_persistent_ttl(e, &key);
+        existing
+    } else {
+        UserPosition::default()
+    }
 }
 
 pub fn set_user_position(e: &Env, user: &Address, position: &UserPosition) {
@@ -179,7 +178,7 @@ pub fn store_deposit(
     amount: i128,
 ) -> Result<(VaultState, UserPosition), VaultError> {
     let mut state = get_state(e)?;
-    let mut position = get_user_position(e, user)?;
+    let mut position = get_user_position_unchecked(e, user);
     accrue_position_rewards(&state, &mut position)?;
 
     position.balance = position
@@ -202,7 +201,7 @@ pub fn store_withdraw(
     amount: i128,
 ) -> Result<(VaultState, UserPosition), VaultError> {
     let mut state = get_state(e)?;
-    let mut position = get_user_position(e, user)?;
+    let mut position = get_user_position_unchecked(e, user);
     accrue_position_rewards(&state, &mut position)?;
 
     if position.balance < amount {
@@ -260,7 +259,7 @@ pub fn store_reward_distribution(e: &Env, amount: i128) -> Result<VaultState, Va
 
 pub fn store_claimable_rewards(e: &Env, user: &Address) -> Result<i128, VaultError> {
     let state = get_state(e)?;
-    let mut position = get_user_position(e, user)?;
+    let mut position = get_user_position_unchecked(e, user);
     accrue_position_rewards(&state, &mut position)?;
 
     let claimable = position.rewards;
@@ -276,7 +275,7 @@ pub fn store_claimable_rewards(e: &Env, user: &Address) -> Result<i128, VaultErr
 
 pub fn pending_user_rewards_view(e: &Env, user: &Address) -> Result<i128, VaultError> {
     let state = get_state(e)?;
-    let mut position = get_user_position(e, user)?;
+    let mut position = get_user_position_unchecked(e, user);
     accrue_position_rewards(&state, &mut position)?;
     Ok(position.rewards)
 }
@@ -378,8 +377,3 @@ fn bump_persistent_ttl(e: &Env, key: &DataKey) {
         .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
 }
 
-fn bump_persistent_ttl_if_present(e: &Env, key: &DataKey) {
-    if e.storage().persistent().has(key) {
-        bump_persistent_ttl(e, key);
-    }
-}

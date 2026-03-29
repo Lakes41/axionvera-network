@@ -40,7 +40,6 @@ impl VaultContract {
     }
 
     pub fn deposit(e: Env, from: Address, amount: i128) -> Result<(), VaultError> {
-        storage::require_initialized(&e)?;
         validate_positive_amount(amount)?;
         from.require_auth();
 
@@ -69,19 +68,15 @@ impl VaultContract {
         events::emit_deposit(&e, from, amount, next_balance);
         Ok(())
         with_non_reentrant(&e, || {
-            let state = storage::get_state(&e)?;
-            let token_id = state.deposit_token.clone();
-            let token = soroban_sdk::token::Client::new(&e, &token_id);
+            let (state, position) = storage::store_deposit(&e, &from, amount)?;
+            let token = soroban_sdk::token::Client::new(&e, &state.deposit_token);
             token.transfer(&from, &e.current_contract_address(), &amount);
-
-            let (_, position) = storage::store_deposit(&e, &from, amount)?;
             events::emit_deposit(&e, from, amount, position.balance);
             Ok(())
         })
     }
 
     pub fn withdraw(e: Env, to: Address, amount: i128) -> Result<(), VaultError> {
-        storage::require_initialized(&e)?;
         validate_positive_amount(amount)?;
         to.require_auth();
 
@@ -110,12 +105,9 @@ impl VaultContract {
         events::emit_withdraw(&e, to, amount, next_balance);
         Ok(())
         with_non_reentrant(&e, || {
-            let state = storage::get_state(&e)?;
-            let token_id = state.deposit_token.clone();
-            let token = soroban_sdk::token::Client::new(&e, &token_id);
-
-            let (_, position) = storage::store_withdraw(&e, &to, amount)?;
+            let (state, position) = storage::store_withdraw(&e, &to, amount)?;
             let next_balance = position.balance;
+            let token = soroban_sdk::token::Client::new(&e, &state.deposit_token);
             token.transfer(&e.current_contract_address(), &to, &amount);
 
             events::emit_withdraw(&e, to, amount, next_balance);
@@ -124,49 +116,32 @@ impl VaultContract {
     }
 
     pub fn distribute_rewards(e: Env, amount: i128) -> Result<i128, VaultError> {
-        storage::require_initialized(&e)?;
         validate_positive_amount(amount)?;
-        let admin = storage::get_admin(&e)?;
+
+        let state = storage::get_state(&e)?;
+        let admin = state.admin;
+        let reward_token = state.reward_token;
         admin.require_auth();
-
-        let total = storage::get_total_deposits(&e)?;
-        if total <= 0 {
-            return Err(BalanceError::NoDeposits.into());
-        }
-
-        let reward_token_id = storage::get_reward_token(&e)?;
-        let reward_token = soroban_sdk::token::Client::new(&e, &reward_token_id);
-        ensure_balance(reward_token.balance(&admin), amount)?;
-
-        let scaled_amount = amount
-            .checked_mul(REWARD_INDEX_SCALE)
-            .ok_or(VaultError::from(ArithmeticError::RewardCalculationFailed))?;
-
-        // Division by zero cannot happen here because `total > 0` is already
-        // enforced above. The checked_mul guards against overflow.
-        let increment = scaled_amount / total;
-
-        let prev_idx = storage::get_reward_index(&e)?;
-        let next_idx = prev_idx
-            .checked_add(increment)
-            .ok_or_else(overflow)?;
-
-        reward_token.transfer(&admin, &e.current_contract_address(), &amount);
-        storage::set_reward_index(&e, next_idx);
-
-        events::emit_distribute(&e, admin, amount, next_idx);
-        Ok(next_idx)
+        with_non_reentrant(&e, || {
+            let next_idx = storage::store_reward_distribution(&e, amount)?.reward_index;
+            let reward_token_client = soroban_sdk::token::Client::new(&e, &reward_token);
+            reward_token_client.transfer(&admin, &e.current_contract_address(), &amount);
+            events::emit_distribute(&e, admin, amount, next_idx);
+            Ok(next_idx)
+        })
     }
 
     pub fn claim_rewards(e: Env, user: Address) -> Result<i128, VaultError> {
-        storage::require_initialized(&e)?;
         user.require_auth();
+        with_non_reentrant(&e, || {
+            let amt = storage::store_claimable_rewards(&e, &user)?;
+            if amt <= 0 {
+                return Ok(0);
+            }
 
-        let reward_snapshot = storage::preview_user_rewards(&e, &user)?;
-        let amt = reward_snapshot.rewards;
-        if amt <= 0 {
-            return Ok(0);
-        }
+            let reward_token_id = storage::get_reward_token(&e)?;
+            let reward_token = soroban_sdk::token::Client::new(&e, &reward_token_id);
+            reward_token.transfer(&e.current_contract_address(), &user, &amt);
 
         let reward_token_id = storage::get_reward_token(&e)?;
         let reward_token = soroban_sdk::token::Client::new(&e, &reward_token_id);
