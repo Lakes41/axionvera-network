@@ -9,10 +9,10 @@ terraform {
   }
   
   backend "s3" {
-    bucket = "axionvera-network-terraform-state"
-    key    = "network-infrastructure.tfstate"
-    region = "us-east-1"
-    encrypt = true
+    bucket         = "axionvera-network-terraform-state"
+    key            = "network-infrastructure.tfstate"
+    region         = "us-east-1"
+    encrypt        = true
     dynamodb_table = "axionvera-network-terraform-locks"
   }
 }
