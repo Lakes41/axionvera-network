@@ -17,6 +17,8 @@ use crate::stellar_service::StellarService;
 use std::path::Path;
 
 pub mod aws_kms_signer;
+#[cfg(test)]
+pub mod aws_kms_signer_tests;
 pub mod chain_params;
 pub mod config;
 pub mod consensus;
@@ -27,6 +29,7 @@ pub mod error;
 pub mod error_middleware;
 pub mod grpc;
 pub mod horizon_client;
+pub mod indexer;
 pub mod metrics;
 pub mod p2p;
 pub mod rate_limiter;
@@ -50,6 +53,7 @@ pub struct NetworkNode {
     signing_service: Arc<SigningService>,
     horizon_client: Arc<HorizonClient>,
     stellar_service: Arc<StellarService>,
+    event_indexer: Arc<indexer::EventIndexer>,
 }
 
 impl NetworkNode {
@@ -106,6 +110,15 @@ impl NetworkNode {
         let stellar_service = Arc::new(StellarService::new(horizon_client.clone()));
         info!("Initialized Stellar service");
 
+        // Initialize event indexer
+        let event_indexer = Arc::new(indexer::EventIndexer::new(
+            stellar_service.clone(),
+            connection_pool.read().await.clone(),
+            config.vault_contract_address.clone(),
+            5, // poll interval in seconds
+        ));
+        info!("Initialized event indexer for contract: {}", config.vault_contract_address);
+
         let chain_parameters = Arc::new(RwLock::new(
             match &config.genesis_config_path {
                 Some(p) => crate::chain_params::ChainParameterRegistry::from_genesis_file(Path::new(p))
@@ -152,6 +165,7 @@ impl NetworkNode {
             signing_service,
             horizon_client,
             stellar_service,
+            event_indexer,
         })
     }
 
@@ -182,6 +196,15 @@ impl NetworkNode {
         let horizon_health_checker = self.horizon_client.clone().start_health_checker().await;
         info!("Started Horizon health checker");
 
+        // Start event indexer
+        let event_indexer = self.event_indexer.clone();
+        let indexer_handle = tokio::spawn(async move {
+            if let Err(e) = event_indexer.start().await {
+                error!("Event indexer error: {:?}", e);
+            }
+        });
+        info!("Started event indexer");
+
         // Bootstrap if peer exists
         if let Some(seed) = self.config.bootstrap_peer.clone() {
             let seed_addr: std::net::SocketAddr = seed
@@ -202,6 +225,9 @@ impl NetworkNode {
             }
             _ = grpc_server_handle => {
                 info!("gRPC server stopped");
+            }
+            _ = indexer_handle => {
+                info!("Event indexer stopped");
             }
             _ = shutdown_signal => {
                 info!("Shutdown signal received, initiating graceful shutdown");

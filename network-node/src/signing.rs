@@ -1,5 +1,5 @@
 use crate::error::{NetworkError, Result};
-use crate::aws_kms_signer::{AwsKmsSigner, AwsKmsConfig};
+use crate::aws_kms_signer::{KmsSigner, KmsConfig};
 use async_trait::async_trait;
 use ed25519_dalek::PublicKey;
 use serde::{Deserialize, Serialize};
@@ -165,7 +165,7 @@ impl SignerFactory {
             }
             SignerConfig::AwsKms { key_id, region, profile } => {
                 info!("Creating AWS KMS signer with key_id: {}, region: {}", key_id, region);
-                let signer = AwsKmsSigner::new(key_id, region, profile).await?;
+                let signer = KmsSigner::new(key_id, region, profile).await?;
                 Ok(Arc::new(signer))
             }
             SignerConfig::Hsm { slot_id, pin } => {
