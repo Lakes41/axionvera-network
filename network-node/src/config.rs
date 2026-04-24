@@ -161,6 +161,22 @@ impl NetworkConfig {
         let vault_contract_address = std::env::var("VAULT_CONTRACT_ADDRESS")
             .unwrap_or_else(|_| "CCDRM2F5H7...".to_string()); // Placeholder
 
+        let signing_config = if let Ok(kms_key_id) = std::env::var("AWS_KMS_KEY_ID") {
+            let region = std::env::var("AWS_REGION").unwrap_or_else(|_| "us-east-1".to_string());
+            let profile = std::env::var("AWS_PROFILE").ok();
+            Some(SignerConfig::AwsKms {
+                key_id: kms_key_id,
+                region,
+                profile,
+            })
+        } else if let Ok(local_key_path) = std::env::var("LOCAL_SIGNER_KEY_PATH") {
+            Some(SignerConfig::Local {
+                key_path: local_key_path,
+            })
+        } else {
+            None
+        };
+
         Ok(Self {
             bind_address,
             grpc_bind_address: std::env::var("GRPC_BIND_ADDRESS").unwrap_or_else(|_| "0.0.0.0:50051".to_string()),
@@ -180,7 +196,7 @@ impl NetworkConfig {
             xray_endpoint: std::env::var("XRAY_ENDPOINT").ok(),
             tracing_enabled,
             tracing_exporter,
-            signing_config: None,
+            signing_config,
             cache_ttl_seconds,
             genesis_config_path,
             horizon_config,

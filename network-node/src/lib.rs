@@ -17,6 +17,8 @@ use crate::stellar_service::StellarService;
 use std::path::Path;
 
 pub mod aws_kms_signer;
+#[cfg(test)]
+pub mod aws_kms_signer_tests;
 pub mod chain_params;
 pub mod config;
 pub mod consensus;

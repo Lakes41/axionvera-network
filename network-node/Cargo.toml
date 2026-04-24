@@ -50,11 +50,13 @@ aws-sdk-secretsmanager = "1"
 aws-smithy-runtime = "1"
 aws-smithy-runtime-api = "1"
 aws-types = "1"
-stellar-horizon = "0.23"
+stellar-horizon = "0.8"
 stellar-sdk = "0.39"
 reqwest = { version = "0.11", features = ["json"] }
 sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid"] }
 dotenvy = "0.15"
+base64 = "0.21"
+http = "0.2"
 
 [build-dependencies]
 tonic-build = "0.11"
