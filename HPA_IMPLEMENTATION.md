@@ -338,3 +338,13 @@ This implementation successfully addresses Issue #420 by providing:
 - ✅ Comprehensive monitoring and testing
 
 The solution provides a robust, scalable foundation for handling network traffic spikes while maintaining system stability and preventing oscillation through proper stabilization mechanisms.
+
+## Local Testing with Minikube
+
+To verify the HPA configuration locally before deploying to production, you can use `minikube` along with a load-generation tool.
+
+### 1. Enable Required Addons
+The HPA requires the Kubernetes Metrics Server to fetch CPU/Memory metrics.
+```bash
+minikube addons enable metrics-server
+```
