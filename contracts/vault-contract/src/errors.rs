@@ -89,6 +89,11 @@ pub enum VaultError {
     // Arithmetic errors (6, 12)
     MathOverflow = 6,
     RewardCalculationFailed = 12,
+
+    // Additional errors
+    ReentrancyDetected = 13,
+    InvalidState = 14,
+    ZeroRewardIncrement = 15,
 }
 
 // ---------------------------------------------------------------------------
@@ -145,6 +150,18 @@ impl VaultError {
             Self::RewardCalculationFailed => ErrorInfo {
                 category: ErrorCategory::Math,
                 message: "reward calculation failed due to arithmetic error",
+            },
+            Self::ReentrancyDetected => ErrorInfo {
+                category: ErrorCategory::State,
+                message: "reentrancy detected",
+            },
+            Self::InvalidState => ErrorInfo {
+                category: ErrorCategory::State,
+                message: "invalid contract state",
+            },
+            Self::ZeroRewardIncrement => ErrorInfo {
+                category: ErrorCategory::Math,
+                message: "reward increment is zero",
             },
         }
     }
@@ -224,8 +241,4 @@ impl From<AuthorizationError> for VaultError {
             AuthorizationError::Unauthorized => Self::Unauthorized,
         }
     }
-    InvalidConfiguration = 8,
-    ReentrancyDetected = 9,
-    InvalidState = 10,
-    ZeroRewardIncrement = 11,
 }

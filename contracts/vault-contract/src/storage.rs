@@ -85,10 +85,8 @@ pub fn get_state(e: &Env) -> Result<VaultState, VaultError> {
     let state = e
         .storage()
         .instance()
-        .get(&DataKey::Admin)
-        .ok_or_else(|| StateError::NotInitialized.into())
         .get(&DataKey::State)
-        .ok_or(VaultError::NotInitialized)?;
+        .ok_or(StateError::NotInitialized)?;
     bump_instance_ttl(e);
     Ok(state)
 }
@@ -98,12 +96,6 @@ pub fn set_state(e: &Env, state: &VaultState) {
     bump_instance_ttl(e);
 }
 
-pub fn get_deposit_token(e: &Env) -> Result<Address, VaultError> {
-    require_initialized(e)?;
-    e.storage()
-        .instance()
-        .get(&DataKey::DepositToken)
-        .ok_or_else(|| StateError::NotInitialized.into())
 pub fn get_admin(e: &Env) -> Result<Address, VaultError> {
     Ok(get_state(e)?.admin)
 }
@@ -113,16 +105,18 @@ pub fn get_deposit_token(e: &Env) -> Result<Address, VaultError> {
 }
 
 pub fn get_reward_token(e: &Env) -> Result<Address, VaultError> {
-    require_initialized(e)?;
-    e.storage()
-        .instance()
-        .get(&DataKey::RewardToken)
-        .ok_or_else(|| StateError::NotInitialized.into())
     Ok(get_state(e)?.reward_token)
 }
 
 pub fn get_total_deposits(e: &Env) -> Result<i128, VaultError> {
     Ok(get_state(e)?.total_deposits)
+}
+
+pub fn set_total_deposits(e: &Env, total: i128) {
+    if let Ok(mut state) = get_state(e) {
+        state.total_deposits = total;
+        set_state(e, &state);
+    }
 }
 
 pub fn get_reward_index(e: &Env) -> Result<i128, VaultError> {
@@ -159,17 +153,34 @@ pub fn set_user_position(e: &Env, user: &Address, position: &UserPosition) {
     }
 }
 
-pub fn get_user_reward_index(e: &Env, user: &Address) -> Result<i128, VaultError> {
-    require_initialized(e)?;
-    let key = DataKey::UserRewardIndex(user.clone());
-    if let Some(idx) = e.storage().persistent().get(&key) {
-        bump_persistent_ttl(e, &key);
-        Ok(idx)
-    } else {
-        Ok(0_i128)
-    }
 pub fn get_user_balance(e: &Env, user: &Address) -> Result<i128, VaultError> {
     Ok(get_user_position(e, user)?.balance)
+}
+
+pub fn set_user_balance(e: &Env, user: &Address, balance: i128) {
+    let mut position = get_user_position_unchecked(e, user);
+    position.balance = balance;
+    set_user_position(e, user, &position);
+}
+
+pub fn get_user_reward_index(e: &Env, user: &Address) -> Result<i128, VaultError> {
+    Ok(get_user_position(e, user)?.reward_index)
+}
+
+pub fn set_user_reward_index(e: &Env, user: &Address, index: i128) {
+    let mut position = get_user_position_unchecked(e, user);
+    position.reward_index = index;
+    set_user_position(e, user, &position);
+}
+
+pub fn get_user_rewards(e: &Env, user: &Address) -> Result<i128, VaultError> {
+    Ok(get_user_position(e, user)?.rewards)
+}
+
+pub fn set_user_rewards(e: &Env, user: &Address, rewards: i128) {
+    let mut position = get_user_position_unchecked(e, user);
+    position.rewards = rewards;
+    set_user_position(e, user, &position);
 }
 
 pub fn store_deposit(
@@ -225,15 +236,6 @@ pub fn store_withdraw(
     Ok((state, position))
 }
 
-pub fn get_user_rewards(e: &Env, user: &Address) -> Result<i128, VaultError> {
-    require_initialized(e)?;
-    let key = DataKey::UserRewards(user.clone());
-    if let Some(amt) = e.storage().persistent().get(&key) {
-        bump_persistent_ttl(e, &key);
-        Ok(amt)
-    } else {
-        Ok(0_i128)
-    }
 pub fn store_reward_distribution(e: &Env, amount: i128) -> Result<VaultState, VaultError> {
     let mut state = get_state(e)?;
     if state.total_deposits <= 0 {
@@ -273,25 +275,10 @@ pub fn store_claimable_rewards(e: &Env, user: &Address) -> Result<i128, VaultErr
     Ok(claimable)
 }
 
-pub fn pending_user_rewards_view(e: &Env, user: &Address) -> Result<i128, VaultError> {
-    let state = get_state(e)?;
-    let mut position = get_user_position_unchecked(e, user);
-    accrue_position_rewards(&state, &mut position)?;
-    Ok(position.rewards)
-}
-
-pub fn accrue_user_rewards(e: &Env, user: &Address) -> Result<(), VaultError> {
-    let snapshot = preview_user_rewards(e, user)?;
-    apply_user_reward_snapshot(e, user, &snapshot);
-    Ok(())
-}
-
-pub fn pending_user_rewards_view(e: &Env, user: &Address) -> Result<i128, VaultError> {
-    Ok(preview_user_rewards(e, user)?.rewards)
-}
-
 pub fn preview_user_rewards(e: &Env, user: &Address) -> Result<UserRewardSnapshot, VaultError> {
-    require_initialized(e)?;
+    if !is_initialized(e) {
+        return Err(VaultError::NotInitialized);
+    }
 
     let global_idx = get_reward_index(e)?;
     let user_idx = get_user_reward_index(e, user)?;
@@ -331,6 +318,10 @@ pub fn preview_user_rewards(e: &Env, user: &Address) -> Result<UserRewardSnapsho
 pub fn apply_user_reward_snapshot(e: &Env, user: &Address, snapshot: &UserRewardSnapshot) {
     set_user_rewards(e, user, snapshot.rewards);
     set_user_reward_index(e, user, snapshot.reward_index);
+}
+
+pub fn pending_user_rewards_view(e: &Env, user: &Address) -> Result<i128, VaultError> {
+    Ok(preview_user_rewards(e, user)?.rewards)
 }
 
 fn accrue_position_rewards(
@@ -376,4 +367,3 @@ fn bump_persistent_ttl(e: &Env, key: &DataKey) {
         .persistent()
         .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
 }
-
