@@ -1,299 +1,292 @@
 use std::sync::Arc;
-use std::time::Duration;
+use std::net::SocketAddr;
+use std::task::{Context, Poll};
+use std::future::Future;
+use std::pin::Pin;
+use std::time::Instant;
+
 use tokio::sync::RwLock;
-use tokio::time::timeout;
-use tracing::{error, info, warn};
+use tonic::transport::{Server, Certificate, Identity, ServerTlsConfig};
+use tonic_web::GrpcWebLayer;
+use tower::{Layer, Service, ServiceBuilder};
+use tracing::{info, error, warn};
+use metrics::{counter, histogram};
 
 use crate::config::NetworkConfig;
 use crate::database::ConnectionPool;
-use crate::error::{NetworkError, Result};
+use crate::error::NetworkError;
+use crate::signing::SigningService;
+use crate::grpc::{
+    NetworkServiceImpl, GatewayServiceImpl, HealthServiceImpl, P2PServiceImpl,
+    network::network_service_server::NetworkServiceServer,
+    network::health_service_server::HealthServiceServer,
+    network::p2p_service_server::P2PServiceServer,
+    gateway::gateway_service_server::GatewayServiceServer,
+};
+use crate::state_trie::StateTrie;
+use crate::p2p::P2PManager;
+use crate::chain_params::ChainParameterRegistry;
 
-/// HTTP server for the network node
-pub struct HttpServer {
-    config: NetworkConfig,
-    connection_pool: Arc<RwLock<ConnectionPool>>,
-    is_accepting_connections: Arc<RwLock<bool>>,
-    active_connections: Arc<RwLock<usize>>,
-    shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
+// ==========================================
+// CUSTOM METRICS MIDDLEWARE
+// ==========================================
+#[derive(Clone)]
+pub struct MetricsLayer;
+
+impl<S> Layer<S> for MetricsLayer {
+    type Service = MetricsService<S>;
+
+    fn layer(&self, service: S) -> Self::Service {
+        MetricsService { inner: service }
+    }
 }
 
-impl HttpServer {
-    /// Create a new HTTP server
-    pub fn new(config: NetworkConfig, connection_pool: Arc<RwLock<ConnectionPool>>) -> Self {
+#[derive(Clone)]
+pub struct MetricsService<S> {
+    inner: S,
+}
+
+impl<S, Req> Service<Req> for MetricsService<S>
+where
+    S: Service<Req> + Clone + Send + 'static,
+    S::Future: Send + 'static,
+{
+    type Response = S::Response;
+    type Error = S::Error;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, req: Req) -> Self::Future {
+        // Increment the total requests counter
+        counter!("grpc_requests_total", 1);
+
+        // Start the duration timer
+        let start = Instant::now();
+
+        // Standard Tower clone-and-call pattern
+        let clone = self.inner.clone();
+        let mut inner = std::mem::replace(&mut self.inner, clone);
+        let fut = inner.call(req);
+
+        Box::pin(async move {
+            let res = fut.await;
+            // Record the request duration in seconds upon completion
+            histogram!("grpc_request_duration_seconds", start.elapsed().as_secs_f64());
+            res
+        })
+    }
+}
+// ==========================================
+
+pub struct GrpcServer {
+    config: NetworkConfig,
+    connection_pool: Arc<RwLock<ConnectionPool>>,
+    state_trie: Arc<RwLock<StateTrie>>,
+    p2p_manager: Arc<P2PManager>,
+    signing_service: Arc<SigningService>,
+    chain_parameters: Arc<RwLock<ChainParameterRegistry>>,
+}
+
+impl Clone for GrpcServer {
+    fn clone(&self) -> Self {
+        Self {
+            config: self.config.clone(),
+            connection_pool: self.connection_pool.clone(),
+            state_trie: self.state_trie.clone(),
+            p2p_manager: self.p2p_manager.clone(),
+            signing_service: self.signing_service.clone(),
+            chain_parameters: self.chain_parameters.clone(),
+        }
+    }
+}
+
+impl GrpcServer {
+    pub fn new(
+        config: NetworkConfig,
+        connection_pool: Arc<RwLock<ConnectionPool>>,
+        state_trie: Arc<RwLock<StateTrie>>,
+        p2p_manager: Arc<P2PManager>,
+        signing_service: Arc<SigningService>,
+        chain_parameters: Arc<RwLock<ChainParameterRegistry>>,
+    ) -> Self {
         Self {
             config,
             connection_pool,
-            is_accepting_connections: Arc::new(RwLock::new(true)),
-            active_connections: Arc::new(RwLock::new(0)),
-            shutdown_tx: None,
+            state_trie,
+            p2p_manager,
+            signing_service,
+            chain_parameters,
         }
     }
 
-    /// Start the HTTP server
-    pub async fn start(&mut self) -> Result<tokio::task::JoinHandle<Result<()>>> {
-        info!("Starting HTTP server on {}", self.config.bind_address);
+    /// Get a reference to the signing service
+    pub fn signing_service(&self) -> &Arc<SigningService> {
+        &self.signing_service
+    }
 
-        let bind_addr = self.config.bind_address.clone();
-        let is_accepting = self.is_accepting_connections.clone();
-        let active_connections = self.active_connections.clone();
-        let connection_pool = self.connection_pool.clone();
+    pub async fn start(&self) -> Result<(), NetworkError> {
+        let addr: SocketAddr = self.config.grpc_bind_address
+            .parse()
+            .map_err(|e| NetworkError::Config(format!("Invalid gRPC bind address: {}", e)))?;
 
-        // Create shutdown channel
-        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
-        self.shutdown_tx = Some(shutdown_tx);
+        info!("Starting gRPC server on {}", addr);
 
-        // In a real implementation, this would start an actual HTTP server (e.g., using hyper or axum)
-        // For now, we simulate the server behavior
-        let handle = tokio::spawn(async move {
-            Self::run_server_simulation(
-                bind_addr,
-                is_accepting,
-                active_connections,
-                connection_pool,
-                shutdown_rx,
+        // Create service implementations
+        let chain_cp = self.chain_parameters.clone();
+        let network_service = NetworkServiceImpl::new(
+            self.connection_pool.clone(),
+            self.state_trie.clone(),
+            self.p2p_manager.clone(),
+            chain_cp.clone(),
+        );
+
+        let gateway_service = GatewayServiceImpl::new(
+            self.connection_pool.clone(),
+            self.state_trie.clone(),
+            self.p2p_manager.clone(),
+            chain_cp.clone(),
+        );
+
+        let health_service = HealthServiceImpl::new(self.connection_pool.clone());
+        let p2p_service = P2PServiceImpl::new(self.p2p_manager.clone());
+
+        // Build the gRPC server with middleware
+        let mut server = Server::builder()
+            .layer(MetricsLayer) // Inject our custom metrics tracking layer globally
+            .add_service(
+                NetworkServiceServer::new(network_service)
+                    .max_decoding_message_size(4 * 1024 * 1024) // 4MB max message size
             )
-            .await
+            .add_service(
+                GatewayServiceServer::new(gateway_service)
+                    .max_decoding_message_size(4 * 1024 * 1024)
+            )
+            .add_service(
+                HealthServiceServer::new(health_service)
+                    .max_decoding_message_size(1024 * 1024) // 1MB for health checks
+            )
+            .add_service(
+                P2PServiceServer::new(p2p_service)
+                    .max_decoding_message_size(8 * 1024 * 1024) // 8MB for P2P messages
+            );
+
+        // Add gRPC-Web support for browser clients
+        server = server.add_service(
+            GatewayServiceServer::new(GatewayServiceImpl::new(
+                self.connection_pool.clone(),
+                self.state_trie.clone(),
+                self.p2p_manager.clone(),
+                self.chain_parameters.clone(),
+            ))
+            .accept_compressed(tonic::codec::CompressionEncoding::Gzip)
+            .send_compressed(tonic::codec::CompressionEncoding::Gzip)
+        );
+
+        // Configure TLS if certificates are provided
+        if let (Some(cert_path), Some(key_path)) = (&self.config.tls_cert_path, &self.config.tls_key_path) {
+            info!("Configuring TLS for gRPC server");
+
+            let cert = std::fs::read_to_string(cert_path)
+                .map_err(|e| NetworkError::Config(format!("Failed to read TLS certificate: {}", e)))?;
+            let key = std::fs::read_to_string(key_path)
+                .map_err(|e| NetworkError::Config(format!("Failed to read TLS private key: {}", e)))?;
+
+            let identity = Identity::from_pem(cert, key);
+            let tls_config = ServerTlsConfig::new()
+                .identity(identity);
+
+            server = server.tls_config(tls_config)
+                .map_err(|e| NetworkError::Config(format!("Failed to configure TLS: {}", e)))?;
+        }
+
+        // Add reflection service for development
+        #[cfg(debug_assertions)]
+        {
+            use tonic_reflection::server::{ServerReflection, ServerReflectionServer};
+            let reflection_service = ServerReflectionServer::new(ServerReflection::new());
+            server = server.add_service(reflection_service);
+            info!("gRPC reflection service enabled");
+        }
+
+        // Apply interceptors for logging
+        server = server.intercept_fn(|req| {
+            info!("gRPC request: method={:?}, metadata={:?}", req.method(), req.metadata());
+            Ok(req)
         });
 
-        Ok(handle)
+        // Start the server
+        let server_future = server.serve_with_shutdown(addr, async {
+            tokio::signal::ctrl_c()
+                .await
+                .expect("Failed to install CTRL+C signal handler");
+            info!("Received shutdown signal, stopping gRPC server");
+        });
+
+        info!("gRPC server started successfully on {}", addr);
+
+        match server_future.await {
+            Ok(_) => {
+                info!("gRPC server stopped gracefully");
+                Ok(())
+            }
+            Err(e) => {
+                error!("gRPC server error: {}", e);
+                Err(NetworkError::Server(format!("gRPC server failed: {}", e)))
+            }
+        }
     }
 
-    /// Stop accepting new connections
-    pub async fn stop_accepting_new_connections(&self) -> Result<()> {
-        info!("Stopping acceptance of new HTTP connections");
-        *self.is_accepting_connections.write().await = false;
+    pub async fn start_with_health_check(&self) -> Result<(), NetworkError> {
+        // Start health check service in a separate task
+        let health_service = HealthServiceImpl::new(self.connection_pool.clone());
+        let health_addr: SocketAddr = "0.0.0.0:50051"
+            .parse()
+            .map_err(|e| NetworkError::Config(format!("Invalid health check address: {}", e)))?;
+
+        tokio::spawn(async move {
+            info!("Starting gRPC health check service on {}", health_addr);
+
+            if let Err(e) = Server::builder()
+                .layer(MetricsLayer) // Inject metrics layer into the separate health server as well
+                .add_service(HealthServiceServer::new(health_service))
+                .serve(health_addr)
+                .await
+            {
+                error!("Health check service error: {}", e);
+            }
+        });
+
+        // Start main gRPC server
+        self.start().await
+    }
+}
+
+// gRPC Gateway for HTTP/JSON-RPC interface
+pub struct GrpcGateway {
+    config: NetworkConfig,
+    grpc_address: String,
+}
+
+impl GrpcGateway {
+    pub fn new(config: NetworkConfig, grpc_address: String) -> Self {
+        Self {
+            config,
+            grpc_address,
+        }
+    }
+
+    pub async fn start(&self) -> Result<(), NetworkError> {
+        info!("Starting gRPC Gateway for HTTP/JSON-RPC interface");
+
+        // TODO: Implement grpc-gateway HTTP reverse proxy
+        // This would typically use grpc-gateway or a custom HTTP-to-gRPC proxy
+
+        warn!("gRPC Gateway HTTP interface not yet implemented");
+        info!("Use the gRPC endpoint directly: {}", self.grpc_address);
+
         Ok(())
-    }
-
-    /// Wait for all active connections to complete
-    pub async fn wait_for_connections_to_complete(&self) -> Result<()> {
-        info!("Waiting for active HTTP connections to complete");
-
-        let mut attempts = 0;
-        let max_attempts = 60; // 60 seconds with 1-second intervals
-
-        while attempts < max_attempts {
-            let active_count = *self.active_connections.read().await;
-            if active_count == 0 {
-                info!("All HTTP connections have completed");
-                break;
-            }
-
-            if attempts % 10 == 0 {
-                info!("Waiting for {} active HTTP connections...", active_count);
-            }
-
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            attempts += 1;
-        }
-
-        if attempts >= max_attempts {
-            warn!("HTTP connections did not complete within timeout period");
-        }
-
-        Ok(())
-    }
-
-    /// Stop the HTTP server completely
-    pub async fn stop(&mut self) -> Result<()> {
-        info!("Stopping HTTP server");
-
-        // Send shutdown signal
-        if let Some(shutdown_tx) = self.shutdown_tx.take() {
-            let _ = shutdown_tx.send(());
-        }
-
-        Ok(())
-    }
-
-    /// Simulated server implementation
-    async fn run_server_simulation(
-        bind_addr: String,
-        is_accepting: Arc<RwLock<bool>>,
-        active_connections: Arc<RwLock<usize>>,
-        connection_pool: Arc<RwLock<ConnectionPool>>,
-        mut shutdown_rx: tokio::sync::oneshot::Receiver<()>,
-    ) -> Result<()> {
-        info!("Server simulation running on {}", bind_addr);
-
-        // Simulate handling incoming connections
-        let mut connection_counter = 0;
-
-        loop {
-            // Check if we should accept new connections
-            let accepting = *is_accepting.read().await;
-
-            if !accepting {
-                info!("Server no longer accepting new connections");
-                break;
-            }
-
-            // Simulate connection handling
-            tokio::select! {
-                _ = shutdown_rx => {
-                    info!("Server shutdown signal received");
-                    break;
-                }
-                _ = tokio::time::sleep(Duration::from_millis(100)) => {
-                    // Simulate occasional connections
-                    if connection_counter % 10 == 0 {
-                        Self::handle_simulated_connection(
-                            connection_counter,
-                            active_connections.clone(),
-                            connection_pool.clone(),
-                        ).await;
-                    }
-                    connection_counter += 1;
-                }
-            }
-        }
-
-        info!("Server simulation stopped");
-        Ok(())
-    }
-
-    /// Simulate handling a single connection
-    async fn handle_simulated_connection(
-        conn_id: usize,
-        active_connections: Arc<RwLock<usize>>,
-        connection_pool: Arc<RwLock<ConnectionPool>>,
-    ) {
-        // Increment active connections
-        *active_connections.write().await += 1;
-
-        info!("Handling simulated connection {}", conn_id);
-
-        // Simulate connection work
-        let work_duration = Duration::from_millis(50 + (conn_id % 200) as u64);
-        tokio::time::sleep(work_duration).await;
-
-        // Simulate database operation
-        if let Ok(pool) = connection_pool.try_read() {
-            if let Ok(conn) = pool.get_connection().await {
-                let _ = conn.execute_query("SELECT * FROM test").await;
-                // Connection is automatically returned when dropped
-            }
-        }
-
-        // Decrement active connections
-        *active_connections.write().await -= 1;
-
-        info!("Completed simulated connection {}", conn_id);
-    }
-
-    /// Get server statistics
-    pub async fn get_stats(&self) -> ServerStats {
-        ServerStats {
-            is_accepting_connections: *self.is_accepting_connections.read().await,
-            active_connections: *self.active_connections.read().await,
-            bind_address: self.config.bind_address.clone(),
-        }
-    }
-}
-
-/// Server statistics
-#[derive(Debug, Clone)]
-pub struct ServerStats {
-    pub is_accepting_connections: bool,
-    pub active_connections: usize,
-    pub bind_address: String,
-}
-
-/// Health check endpoint handler
-pub async fn health_check() -> HealthStatus {
-    // In a real implementation, this would check various system components
-    HealthStatus {
-        status: "healthy".to_string(),
-        timestamp: chrono::Utc::now(),
-        version: env!("CARGO_PKG_VERSION").to_string(),
-        uptime: chrono::Utc::now() - chrono::Utc::now(), // This would be actual uptime
-    }
-}
-
-/// Ready check endpoint handler
-pub async fn ready_check(connection_pool: Arc<RwLock<ConnectionPool>>) -> ReadyStatus {
-    let pool = connection_pool.read().await;
-
-    let database_healthy = pool.health_check().await.unwrap_or(false);
-    let active_connections = pool.active_connections().await;
-
-    ReadyStatus {
-        ready: database_healthy && active_connections > 0,
-        database_healthy,
-        active_connections,
-        timestamp: chrono::Utc::now(),
-    }
-}
-
-/// Health status response
-#[derive(Debug, serde::Serialize)]
-pub struct HealthStatus {
-    pub status: String,
-    pub timestamp: chrono::DateTime<chrono::Utc>,
-    pub version: String,
-    pub uptime: chrono::Duration,
-}
-
-/// Ready status response
-#[derive(Debug, serde::Serialize)]
-pub struct ReadyStatus {
-    pub ready: bool,
-    pub database_healthy: bool,
-    pub active_connections: usize,
-    pub timestamp: chrono::DateTime<chrono::Utc>,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::config::DatabaseConfig;
-
-    #[tokio::test]
-    async fn test_server_lifecycle() {
-        let config = NetworkConfig {
-            bind_address: "127.0.0.1:0".to_string(),
-            database_url: "sqlite::memory:".to_string(),
-            database_config: DatabaseConfig::default(),
-            shutdown_grace_period: Duration::from_secs(5),
-            log_level: "info".to_string(),
-        };
-
-        let connection_pool = Arc::new(RwLock::new(
-            ConnectionPool::new("sqlite::memory:").await.unwrap(),
-        ));
-
-        let mut server = HttpServer::new(config.clone(), connection_pool.clone());
-
-        // Start server
-        let handle = server.start().await.unwrap();
-
-        // Check initial stats
-        let stats = server.get_stats().await;
-        assert!(stats.is_accepting_connections);
-        assert_eq!(stats.active_connections, 0);
-
-        // Stop accepting new connections
-        server.stop_accepting_new_connections().await.unwrap();
-
-        let stats = server.get_stats().await;
-        assert!(!stats.is_accepting_connections);
-
-        // Wait for server to finish
-        let result = handle.await.unwrap();
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_health_endpoints() {
-        let health = health_check().await;
-        assert_eq!(health.status, "healthy");
-
-        let connection_pool = Arc::new(RwLock::new(
-            ConnectionPool::new("sqlite::memory:").await.unwrap(),
-        ));
-
-        let ready = ready_check(connection_pool).await;
-        assert!(ready.ready);
-        assert!(ready.database_healthy);
     }
 }

@@ -11,49 +11,57 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: axionvera-node
-  minReplicas: 3
+  minReplicas: 2  # Updated to 2 as per Issue #101 Acceptance Criteria
   maxReplicas: 10
   metrics:
-  - type: External
-    external:
-      metric:
-        name: axionvera_transaction_queue_depth
-        selector:
-          matchLabels:
-            app: axionvera-node
-      target:
-        type: AverageValue
-        averageValue: "1000"
-  - type: Resource
-    resource:
-      name: cpu
-      target:
-        type: Utilization
-        averageUtilization: 70
-  - type: Resource
-    resource:
-      name: memory
-      target:
-        type: Utilization
-        averageUtilization: 80
+    # New Custom Metric: Scales up if gRPC load gets too heavy
+    - type: Pods
+      pods:
+        metric:
+          name: grpc_requests_per_second
+        target:
+          type: AverageValue
+          averageValue: "100"
+    - type: External
+      external:
+        metric:
+          name: axionvera_transaction_queue_depth
+          selector:
+            matchLabels:
+              app: axionvera-node
+        target:
+          type: AverageValue
+          averageValue: "1000"
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
   behavior:
     scaleDown:
       stabilizationWindowSeconds: 300
       policies:
-      - type: Percent
-        value: 10
-        periodSeconds: 60
-      - type: Pods
-        value: 1
-        periodSeconds: 60
+        - type: Percent
+          value: 10
+          periodSeconds: 60
+        - type: Pods
+          value: 1
+          periodSeconds: 60
       selectPolicy: Min
     scaleUp:
       stabilizationWindowSeconds: 0
       policies:
-      - type: Percent
-        value: 50
-        periodSeconds: 60
-      - type: Pods
-        value: 2
-        periodSeconds: 60
+        - type: Percent
+          value: 50
+          periodSeconds: 60
+        - type: Pods
+          value: 2
+          periodSeconds: 60
       selectPolicy: Max
