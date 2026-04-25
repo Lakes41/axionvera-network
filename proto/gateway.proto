@@ -112,6 +112,12 @@ service GatewayService {
       get: "/v1/health/watch"
     };
   }
+
+  rpc GetTVL(TVLRequest) returns (TVLResponse) {
+    option (google.api.http) = {
+      get: "/v1/query/tvl"
+    };
+  }
 }
 
 // Request/Response types (reused from network.proto but with gateway-specific additions)
@@ -359,4 +365,14 @@ message PendingParameterUpgrade {
 
 message PendingParameterUpgradesResponse {
   repeated PendingParameterUpgrade pending = 1;
+}
+
+message TVLRequest {
+  string token_address = 1;
+}
+
+message TVLResponse {
+  string total_value_locked = 1;
+  string token_address = 2;
+  google.protobuf.Timestamp timestamp = 3;
 }

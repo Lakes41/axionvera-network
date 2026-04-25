@@ -30,6 +30,9 @@ service NetworkService {
   rpc ParameterUpgrade(ParameterUpgradeRequest) returns (TransactionResponse);
   rpc GetChainParameters(google.protobuf.Empty) returns (ChainParametersView);
   rpc ListPendingParameterUpgrades(google.protobuf.Empty) returns (PendingParameterUpgradesResponse);
+
+  // TVL query methods
+  rpc GetTVL(TVLRequest) returns (TVLResponse);
 }
 
 // P2P network service for peer-to-peer communication
@@ -343,4 +346,14 @@ enum HealthStatus {
   SERVING = 1;
   NOT_SERVING = 2;
   UNKNOWN = 3;
+}
+
+message TVLRequest {
+  string token_address = 1; // Optional: filter by token
+}
+
+message TVLResponse {
+  string total_value_locked = 1;
+  string token_address = 2;
+  google.protobuf.Timestamp timestamp = 3;
 }

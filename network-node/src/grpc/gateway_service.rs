@@ -17,7 +17,7 @@ use crate::grpc::gateway::{
     NetworkStatusResponse, NodeInfoRequest, NodeInfoResponse, ParameterUpgradeRequest,
     PendingParameterUpgrade, PendingParameterUpgradesResponse, TransactionRequest,
     TransactionHistoryRequest, TransactionHistoryResponse, TransactionInfo, PaginationInfo,
-    HealthCheckResponse, ServiceHealth,
+    HealthCheckResponse, ServiceHealth, TVLRequest, TVLResponse,
 };
 use crate::grpc::network_service::NetworkServiceImpl;
 use crate::p2p::P2PManager;
@@ -464,6 +464,27 @@ impl GatewayService for GatewayServiceImpl {
                 })
                 .collect();
             Ok(PendingParameterUpgradesResponse { pending })
+        })
+        .await
+    }
+
+    async fn get_tvl(&self, request: Request<TVLRequest>) -> Result<Response<TVLResponse>, Status> {
+        let req = request.into_inner();
+        let request_id = Self::generate_request_id();
+
+        self.process_with_tracking(request_id, async move {
+            let nv = self
+                .network_service
+                .get_tvl(Request::new(crate::grpc::network::TVLRequest {
+                    token_address: req.token_address,
+                }))
+                .await?
+                .into_inner();
+            Ok(TVLResponse {
+                total_value_locked: nv.total_value_locked,
+                token_address: nv.token_address,
+                timestamp: nv.timestamp,
+            })
         })
         .await
     }

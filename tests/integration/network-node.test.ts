@@ -25,7 +25,7 @@ describe('Network Node Integration Tests', () => {
         const response = await fetch(`${baseUrl}/health/liveness`);
         expect(response.status).toBe(200);
         
-        const data = await response.json();
+        const data = (await response.json()) as any;
         expect(data.status).toBe('alive');
         expect(data.timestamp).toBeDefined();
       } catch (error) {
@@ -40,7 +40,7 @@ describe('Network Node Integration Tests', () => {
         // Should return 200 if ready, 503 if not ready
         expect([200, 503]).toContain(response.status);
         
-        const data = await response.json();
+        const data = (await response.json()) as any;
         expect(data.status).toBeDefined();
         expect(data.database).toBeDefined();
         expect(data.timestamp).toBeDefined();

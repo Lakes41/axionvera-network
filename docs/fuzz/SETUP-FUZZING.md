@@ -3,10 +3,12 @@
 Overview
 --------
 This document explains how to run fuzz tests for the repository. We use `cargo-fuzz` (libFuzzer) to mutate arbitrary bytes and feed them into deserialization and parsing code paths in `network-node`.
+For the vault contract reward-index math, we also use `proptest` to repeatedly generate extreme `i128` values and tiny deposit totals.
 
 What was added
 --------------
 - `fuzz/` with a `Cargo.toml` and `fuzz_targets/parse_payload.rs` fuzz target that exercises `NetworkConfig` and `DatabaseConfig` deserialization and socket address parsing.
+- `contracts/vault-contract` property tests that fuzz the `distribute_rewards` math around `REWARD_INDEX_SCALE`, overflow, and zero-increment edge cases.
 
 Prerequisites
 -------------
@@ -34,6 +36,12 @@ cargo fuzz init
 ```bash
 cd fuzz
 cargo fuzz run parse_payload -- -runs=1000000
+```
+
+4. Run the vault reward-index property tests:
+
+```bash
+cargo test -p axionvera-vault-contract reward_index_math
 ```
 
 Notes:
