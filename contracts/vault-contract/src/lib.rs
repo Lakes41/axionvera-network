@@ -1,5 +1,4 @@
 #![no_std]
-extern crate alloc;
 
 mod errors;
 mod events;
@@ -27,13 +26,13 @@ impl VaultContract {
         if storage::is_initialized(&e) {
             return Err(StateError::AlreadyInitialized.into());
         }
-        validate_distinct_token_addresses(&deposit_token, &reward_token)?;
 
+        validate_distinct_token_addresses(&deposit_token, &reward_token)?;
         admin.require_auth();
 
         storage::initialize_state(&e, &admin, &deposit_token, &reward_token);
-
         events::emit_initialize(&e, admin, deposit_token, reward_token);
+
         Ok(())
     }
 
@@ -44,10 +43,10 @@ impl VaultContract {
         from.require_auth();
 
         with_non_reentrant(&e, || {
-            let (state, position) = storage::store_deposit(&e, &from, amount)?;
-            let token = soroban_sdk::token::Client::new(&e, &state.deposit_token);
+            let (_, position) = storage::store_deposit(&e, &from, amount)?;
+            let token = soroban_sdk::token::Client::new(&e, &token_id);
             token.transfer(&from, &e.current_contract_address(), &amount);
-            events::emit_deposit(&e, from, amount, position.balance);
+            events::emit_deposit(&e, from.clone(), amount, position.balance);
             Ok(())
         })
     }
@@ -75,16 +74,17 @@ impl VaultContract {
         validate_positive_amount(amount)?;
 
         let state = storage::get_state(&e)?;
-        let admin = state.admin;
-        let reward_token = state.reward_token;
+        let admin = state.admin.clone();
+        let reward_token_id = state.reward_token.clone();
+
         admin.require_auth();
 
         with_non_reentrant(&e, || {
-            let next_idx = storage::store_reward_distribution(&e, amount)?.reward_index;
-            let reward_token_client = soroban_sdk::token::Client::new(&e, &reward_token);
-            reward_token_client.transfer(&admin, &e.current_contract_address(), &amount);
-            events::emit_distribute(&e, admin, amount, next_idx);
-            Ok(next_idx)
+            let next_index = storage::store_reward_distribution(&e, amount)?.reward_index;
+            let reward_token = soroban_sdk::token::Client::new(&e, &reward_token_id);
+            reward_token.transfer(&admin, &e.current_contract_address(), &amount);
+            events::emit_distribute(&e, admin.clone(), amount, next_index);
+            Ok(next_index)
         })
     }
 
@@ -138,15 +138,6 @@ impl VaultContract {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Internal validation helpers
-// ---------------------------------------------------------------------------
-
-/// Validates that `amount` is strictly positive.
-///
-/// Returns [`VaultError::NegativeAmount`] when `amount < 0` and
-/// [`VaultError::InvalidAmount`] when `amount == 0`. This distinction gives
-/// callers precise diagnostics about *why* their input was rejected.
 fn validate_positive_amount(amount: i128) -> Result<(), VaultError> {
     if amount < 0 {
         return Err(ValidationError::NegativeAmount.into());

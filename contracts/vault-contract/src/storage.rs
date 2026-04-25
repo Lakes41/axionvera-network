@@ -1,6 +1,6 @@
 use soroban_sdk::{contracttype, Address, Env};
 
-use crate::errors::{ArithmeticError, StateError, VaultError};
+use crate::errors::{ArithmeticError, AuthorizationError, StateError, VaultError};
 
 pub const REWARD_INDEX_SCALE: i128 = 1_000_000_000_000_000_000;
 
@@ -65,10 +65,10 @@ pub fn initialize_state(
 pub fn enter_non_reentrant(e: &Env) -> Result<(), VaultError> {
     if e.storage()
         .instance()
-        .get(&DataKey::ReentrancyGuard)
+        .get::<_, bool>(&DataKey::ReentrancyGuard)
         .unwrap_or(false)
     {
-        return Err(VaultError::ReentrancyDetected);
+        return Err(AuthorizationError::ReentrancyDetected.into());
     }
 
     e.storage().instance().set(&DataKey::ReentrancyGuard, &true);
@@ -124,10 +124,7 @@ pub fn get_reward_index(e: &Env) -> Result<i128, VaultError> {
 }
 
 pub fn get_user_position(e: &Env, user: &Address) -> Result<UserPosition, VaultError> {
-    // Keep public behavior: user queries on an uninitialized contract must fail.
-    if !is_initialized(e) {
-        return Err(VaultError::NotInitialized);
-    }
+    require_initialized(e)?;
     bump_instance_ttl(e);
     Ok(get_user_position_unchecked(e, user))
 }
@@ -219,7 +216,7 @@ pub fn store_withdraw(
         return Err(VaultError::InsufficientBalance);
     }
     if state.total_deposits < amount {
-        return Err(VaultError::InvalidState);
+        return Err(StateError::InvalidState.into());
     }
 
     position.balance = position
@@ -238,17 +235,7 @@ pub fn store_withdraw(
 
 pub fn store_reward_distribution(e: &Env, amount: i128) -> Result<VaultState, VaultError> {
     let mut state = get_state(e)?;
-    if state.total_deposits <= 0 {
-        return Err(VaultError::NoDeposits);
-    }
-
-    let increment = amount
-        .checked_mul(REWARD_INDEX_SCALE)
-        .ok_or(VaultError::MathOverflow)?
-        / state.total_deposits;
-    if increment <= 0 {
-        return Err(VaultError::ZeroRewardIncrement);
-    }
+    let increment = checked_reward_index_increment(amount, state.total_deposits)?;
 
     state.reward_index = state
         .reward_index
@@ -265,12 +252,8 @@ pub fn store_claimable_rewards(e: &Env, user: &Address) -> Result<i128, VaultErr
     accrue_position_rewards(&state, &mut position)?;
 
     let claimable = position.rewards;
-    if claimable > 0 {
-        position.rewards = 0;
-        set_user_position(e, user, &position);
-    } else if position.reward_index != state.reward_index {
-        set_user_position(e, user, &position);
-    }
+    position.rewards = 0;
+    set_user_position(e, user, &position);
 
     Ok(claimable)
 }
@@ -290,34 +273,49 @@ pub fn preview_user_rewards(e: &Env, user: &Address) -> Result<UserRewardSnapsho
         });
     }
 
-    let balance = get_user_balance(e, user)?;
-    if balance == 0 {
+    if state.reward_index == position.reward_index || position.balance == 0 {
         return Ok(UserRewardSnapshot {
-            reward_index: global_idx,
-            rewards: current_rewards,
+            reward_index: state.reward_index,
+            rewards: position.rewards,
         });
     }
 
-    let delta = global_idx
-        .checked_sub(user_idx)
-        .ok_or(VaultError::from(ArithmeticError::Overflow))?;
-    let accrued = balance
-        .checked_mul(delta)
-        .ok_or(VaultError::from(ArithmeticError::Overflow))?
-        / REWARD_INDEX_SCALE;
-    let rewards = current_rewards
+    let delta = state
+        .reward_index
+        .checked_sub(position.reward_index)
+        .ok_or(VaultError::MathOverflow)?;
+    let accrued = checked_accrued_rewards(position.balance, delta)?;
+    let rewards = position
+        .rewards
         .checked_add(accrued)
-        .ok_or(VaultError::from(ArithmeticError::Overflow))?;
+        .ok_or(VaultError::MathOverflow)?;
 
     Ok(UserRewardSnapshot {
-        reward_index: global_idx,
+        reward_index: state.reward_index,
         rewards,
     })
 }
 
-pub fn apply_user_reward_snapshot(e: &Env, user: &Address, snapshot: &UserRewardSnapshot) {
-    set_user_rewards(e, user, snapshot.rewards);
-    set_user_reward_index(e, user, snapshot.reward_index);
+pub(crate) fn checked_reward_index_increment(
+    amount: i128,
+    total_deposits: i128,
+) -> Result<i128, VaultError> {
+    if total_deposits <= 0 {
+        return Err(VaultError::NoDeposits);
+    }
+
+    let scaled = amount
+        .checked_mul(REWARD_INDEX_SCALE)
+        .ok_or(VaultError::MathOverflow)?;
+    let increment = scaled
+        .checked_div(total_deposits)
+        .ok_or(VaultError::from(ArithmeticError::RewardCalculationFailed))?;
+
+    if increment <= 0 {
+        return Err(VaultError::from(ArithmeticError::ZeroRewardIncrement));
+    }
+
+    Ok(increment)
 }
 
 pub fn pending_user_rewards_view(e: &Env, user: &Address) -> Result<i128, VaultError> {
@@ -337,12 +335,7 @@ fn accrue_position_rewards(
             .reward_index
             .checked_sub(position.reward_index)
             .ok_or(VaultError::MathOverflow)?;
-
-        let accrued = position
-            .balance
-            .checked_mul(delta)
-            .ok_or(VaultError::MathOverflow)?
-            / REWARD_INDEX_SCALE;
+        let accrued = checked_accrued_rewards(position.balance, delta)?;
 
         if accrued > 0 {
             position.rewards = position
@@ -354,6 +347,14 @@ fn accrue_position_rewards(
 
     position.reward_index = state.reward_index;
     Ok(())
+}
+
+fn require_initialized(e: &Env) -> Result<(), VaultError> {
+    if is_initialized(e) {
+        Ok(())
+    } else {
+        Err(StateError::NotInitialized.into())
+    }
 }
 
 fn bump_instance_ttl(e: &Env) {
