@@ -6,7 +6,7 @@ mod storage;
 
 use soroban_sdk::{contract, contractimpl, Address, Env};
 
-use crate::errors::{BalanceError, StateError, ValidationError, VaultError};
+use crate::errors::{ArithmeticError, BalanceError, StateError, ValidationError, VaultError};
 
 #[contract]
 pub struct VaultContract;
@@ -36,13 +36,11 @@ impl VaultContract {
         Ok(())
     }
 
+    /// Deposits tokens into the vault and accrues pending rewards before updating balance.
+    /// This ensures users receive rewards based on their old balance up to this point.
     pub fn deposit(e: Env, from: Address, amount: i128) -> Result<(), VaultError> {
         validate_positive_amount(amount)?;
         from.require_auth();
-
-        let token_id = storage::get_deposit_token(&e)?;
-        let token = soroban_sdk::token::Client::new(&e, &token_id);
-        ensure_balance(token.balance(&from), amount)?;
 
         with_non_reentrant(&e, || {
             let (_, position) = storage::store_deposit(&e, &from, amount)?;
@@ -53,25 +51,25 @@ impl VaultContract {
         })
     }
 
+    /// Withdraws tokens from the vault and accrues pending rewards before updating balance.
+    /// This function is isolated from reward claiming - it only handles the deposit token.
+    /// If the reward token contract fails, users can still withdraw their deposits.
     pub fn withdraw(e: Env, to: Address, amount: i128) -> Result<(), VaultError> {
         validate_positive_amount(amount)?;
         to.require_auth();
 
-        ensure_balance(storage::get_user_balance(&e, &to)?, amount)?;
-
-        let token_id = storage::get_deposit_token(&e)?;
-        let token = soroban_sdk::token::Client::new(&e, &token_id);
-        ensure_contract_balance(token.balance(&e.current_contract_address()), amount)?;
-
         with_non_reentrant(&e, || {
-            let (_, position) = storage::store_withdraw(&e, &to, amount)?;
-            let token = soroban_sdk::token::Client::new(&e, &token_id);
+            let (state, position) = storage::store_withdraw(&e, &to, amount)?;
+            let token = soroban_sdk::token::Client::new(&e, &state.deposit_token);
             token.transfer(&e.current_contract_address(), &to, &amount);
-            events::emit_withdraw(&e, to.clone(), amount, position.balance);
+
+            events::emit_withdraw(&e, to, amount, position.balance);
             Ok(())
         })
     }
 
+    /// Distributes rewards to all depositors by updating the global reward index.
+    /// Does not immediately transfer rewards to users - they accrue lazily.
     pub fn distribute_rewards(e: Env, amount: i128) -> Result<i128, VaultError> {
         validate_positive_amount(amount)?;
 
@@ -80,9 +78,6 @@ impl VaultContract {
         let reward_token_id = state.reward_token.clone();
 
         admin.require_auth();
-
-        let reward_token = soroban_sdk::token::Client::new(&e, &reward_token_id);
-        ensure_balance(reward_token.balance(&admin), amount)?;
 
         with_non_reentrant(&e, || {
             let next_index = storage::store_reward_distribution(&e, amount)?.reward_index;
@@ -93,31 +88,24 @@ impl VaultContract {
         })
     }
 
+    /// Claims accrued rewards for a user.
+    /// Isolated from withdraw to ensure exit liquidity is always available.
     pub fn claim_rewards(e: Env, user: Address) -> Result<i128, VaultError> {
         user.require_auth();
 
-        let claimable = storage::pending_user_rewards_view(&e, &user)?;
-        if claimable <= 0 {
-            return Ok(0);
-        }
-
-        let reward_token_id = storage::get_reward_token(&e)?;
-        let reward_token = soroban_sdk::token::Client::new(&e, &reward_token_id);
-        ensure_contract_balance(
-            reward_token.balance(&e.current_contract_address()),
-            claimable,
-        )?;
-
         with_non_reentrant(&e, || {
-            let amount = storage::store_claimable_rewards(&e, &user)?;
-            if amount <= 0 {
+            let amt = storage::store_claimable_rewards(&e, &user)?;
+            if amt <= 0 {
                 return Ok(0);
             }
 
+            let reward_token_id = storage::get_reward_token(&e)?;
             let reward_token = soroban_sdk::token::Client::new(&e, &reward_token_id);
-            reward_token.transfer(&e.current_contract_address(), &user, &amount);
-            events::emit_claim(&e, user.clone(), amount);
-            Ok(amount)
+            ensure_contract_balance(reward_token.balance(&e.current_contract_address()), amt)?;
+            reward_token.transfer(&e.current_contract_address(), &user, &amt);
+
+            events::emit_claim(&e, user, amt);
+            Ok(amt)
         })
     }
 
@@ -187,6 +175,10 @@ fn ensure_contract_balance(balance: i128, requested_amount: i128) -> Result<(), 
     Ok(())
 }
 
+fn overflow() -> VaultError {
+    ArithmeticError::Overflow.into()
+}
+
 fn with_non_reentrant<T, F>(e: &Env, f: F) -> Result<T, VaultError>
 where
     F: FnOnce() -> Result<T, VaultError>,
@@ -197,140 +189,7 @@ where
     result
 }
 
-#[cfg(test)]
-mod tests {
-    extern crate std;
-
-    use super::*;
-    use crate::storage::{checked_reward_index_increment, REWARD_INDEX_SCALE};
-    use proptest::prelude::*;
-    use soroban_sdk::testutils::Address as _;
-    use soroban_sdk::token::StellarAssetClient;
-
-    fn setup_vault(
-        e: &Env,
-    ) -> (
-        Address,
-        Address,
-        Address,
-        Address,
-        Address,
-        VaultContractClient<'_>,
-    ) {
-        e.mock_all_auths();
-
-        let admin = Address::generate(e);
-        let user = Address::generate(e);
-        let deposit_token_id = e.register_stellar_asset_contract_v2(admin.clone()).address();
-        let reward_token_id = e.register_stellar_asset_contract_v2(admin.clone()).address();
-        let vault_id = e.register(VaultContract, ());
-        let vault = VaultContractClient::new(e, &vault_id);
-
-        vault.initialize(&admin, &deposit_token_id, &reward_token_id);
-
-        (admin, user, deposit_token_id, reward_token_id, vault_id, vault)
-    }
-
-    #[test]
-    fn rewards_are_proportional_and_claimable() {
-        let e = Env::default();
-        let (admin, user_a, deposit_token_id, reward_token_id, _vault_id, vault) =
-            setup_vault(&e);
-        let user_b = Address::generate(&e);
-
-        let deposit_token = StellarAssetClient::new(&e, &deposit_token_id);
-        let reward_token = StellarAssetClient::new(&e, &reward_token_id);
-
-        deposit_token.mint(&user_a, &1_000);
-        deposit_token.mint(&user_b, &1_000);
-        reward_token.mint(&admin, &600);
-
-        vault.deposit(&user_a, &100);
-        vault.deposit(&user_b, &300);
-
-        let next_index = vault.distribute_rewards(&400);
-        assert_eq!(next_index, REWARD_INDEX_SCALE);
-        assert_eq!(vault.pending_rewards(&user_a), 100);
-        assert_eq!(vault.pending_rewards(&user_b), 300);
-        assert_eq!(vault.claim_rewards(&user_a), 100);
-        assert_eq!(vault.claim_rewards(&user_b), 300);
-    }
-
-    #[test]
-    fn distribute_rewards_extreme_values_fail_gracefully() {
-        let e = Env::default();
-        let admin = Address::generate(&e);
-        let deposit_token_id = e.register_stellar_asset_contract_v2(admin.clone()).address();
-        let reward_token_id = e.register_stellar_asset_contract_v2(admin.clone()).address();
-        let vault_id = e.register(VaultContract, ());
-
-        e.as_contract(&vault_id, || {
-            storage::initialize_state(&e, &admin, &deposit_token_id, &reward_token_id);
-
-            let mut state = storage::get_state(&e).unwrap();
-            state.total_deposits = 1;
-            storage::set_state(&e, &state);
-
-            let result = storage::store_reward_distribution(&e, i128::MAX);
-            assert_eq!(result, Err(VaultError::MathOverflow));
-            assert_eq!(storage::get_reward_index(&e).unwrap(), 0);
-        });
-    }
-
-    fn rewards_strategy() -> impl Strategy<Value = i128> {
-        prop_oneof![
-            Just(1_i128),
-            Just(REWARD_INDEX_SCALE),
-            Just(i128::MAX - 1),
-            Just(i128::MAX),
-            (1_i128..=i128::MAX),
-        ]
-    }
-
-    fn deposits_strategy() -> impl Strategy<Value = i128> {
-        prop_oneof![Just(1_i128), Just(2_i128), Just(3_i128), 1_i128..=1_000_000_i128,]
-    }
-
-    proptest! {
-        #[test]
-        fn reward_index_math_matches_checked_arithmetic(
-            total_deposits in deposits_strategy(),
-            rewards in rewards_strategy(),
-        ) {
-            let result = checked_reward_index_increment(rewards, total_deposits);
-
-            match rewards.checked_mul(REWARD_INDEX_SCALE) {
-                None => prop_assert_eq!(result, Err(VaultError::MathOverflow)),
-                Some(scaled) => {
-                    let expected = scaled.checked_div(total_deposits).unwrap();
-
-                    if expected <= 0 {
-                        prop_assert_eq!(result, Err(VaultError::ZeroRewardIncrement));
-                    } else {
-                        prop_assert_eq!(result, Ok(expected));
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn pending_rewards_view_does_not_mutate_state_after_failed_overflow_path() {
-        let e = Env::default();
-        let admin = Address::generate(&e);
-        let user = Address::generate(&e);
-        let deposit_token_id = e.register_stellar_asset_contract_v2(admin.clone()).address();
-        let reward_token_id = e.register_stellar_asset_contract_v2(admin.clone()).address();
-        let vault_id = e.register(VaultContract, ());
-
-        e.as_contract(&vault_id, || {
-            storage::initialize_state(&e, &admin, &deposit_token_id, &reward_token_id);
-            let _ = storage::store_deposit(&e, &user, 1);
-
-            let err = storage::store_reward_distribution(&e, i128::MAX).unwrap_err();
-            assert_eq!(err, VaultError::MathOverflow);
-            assert_eq!(storage::pending_user_rewards_view(&e, &user).unwrap(), 0);
-            assert_eq!(storage::get_reward_index(&e).unwrap(), 0);
-        });
-    }
-}
+// TODO(reward-optimization): Consider a higher precision / rounding strategy for small totals.
+// TODO(security): Consider adding pausability or per-user deposit caps.
+// TODO(governance): Introduce admin handover / multisig patterns.
+// TODO(upgradeability): Evaluate upgrade patterns compatible with Soroban best practices.

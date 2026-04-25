@@ -62,6 +62,7 @@ pub struct NodeInfoQuery {
         (status = 500, description = "Internal server error")
     )
 )]
+#[tracing::instrument(skip(gateway_service, request), fields(request_id = %uuid::Uuid::new_v4()))]
 pub async fn deposit(
     State(gateway_service): State<GatewayServiceImpl>,
     Json(request): Json<DepositRequest>,
@@ -84,6 +85,7 @@ pub async fn deposit(
         (status = 500, description = "Internal server error")
     )
 )]
+#[tracing::instrument(skip(gateway_service, request), fields(request_id = %uuid::Uuid::new_v4()))]
 pub async fn withdraw(
     State(gateway_service): State<GatewayServiceImpl>,
     Json(request): Json<WithdrawRequest>,
@@ -106,6 +108,7 @@ pub async fn withdraw(
         (status = 500, description = "Internal server error")
     )
 )]
+#[tracing::instrument(skip(gateway_service, request), fields(request_id = %uuid::Uuid::new_v4()))]
 pub async fn distribute_rewards(
     State(gateway_service): State<GatewayServiceImpl>,
     Json(request): Json<DistributeRewardsRequest>,
@@ -128,6 +131,7 @@ pub async fn distribute_rewards(
         (status = 500, description = "Internal server error")
     )
 )]
+#[tracing::instrument(skip(gateway_service, request), fields(request_id = %uuid::Uuid::new_v4()))]
 pub async fn claim_rewards(
     State(gateway_service): State<GatewayServiceImpl>,
     Json(request): Json<ClaimRewardsRequest>,
@@ -150,6 +154,7 @@ pub async fn claim_rewards(
         (status = 500, description = "Internal server error")
     )
 )]
+#[tracing::instrument(skip(gateway_service), fields(request_id = %uuid::Uuid::new_v4(), user_public_key = %query.user_address))]
 pub async fn get_balance(
     State(gateway_service): State<GatewayServiceImpl>,
     Query(query): Query<BalanceQuery>,
@@ -177,6 +182,7 @@ pub async fn get_balance(
         (status = 500, description = "Internal server error")
     )
 )]
+#[tracing::instrument(skip(gateway_service), fields(request_id = %uuid::Uuid::new_v4(), user_public_key = %query.user_address))]
 pub async fn get_rewards(
     State(gateway_service): State<GatewayServiceImpl>,
     Query(query): Query<RewardsQuery>,
@@ -203,6 +209,7 @@ pub async fn get_rewards(
         (status = 500, description = "Internal server error")
     )
 )]
+#[tracing::instrument(skip(gateway_service), fields(request_id = %uuid::Uuid::new_v4()))]
 pub async fn get_contract_state(
     State(gateway_service): State<GatewayServiceImpl>,
     Query(query): Query<ContractStateQuery>,
@@ -231,6 +238,7 @@ pub async fn get_contract_state(
         (status = 500, description = "Internal server error")
     )
 )]
+#[tracing::instrument(skip(gateway_service), fields(request_id = %uuid::Uuid::new_v4()))]
 pub async fn get_transaction(
     State(gateway_service): State<GatewayServiceImpl>,
     Path(transaction_hash): Path<String>,
@@ -257,6 +265,7 @@ pub async fn get_transaction(
         (status = 500, description = "Internal server error")
     )
 )]
+#[tracing::instrument(skip(gateway_service), fields(request_id = %uuid::Uuid::new_v4()))]
 pub async fn get_transaction_history(
     State(gateway_service): State<GatewayServiceImpl>,
     Query(query): Query<PaginationQuery>,

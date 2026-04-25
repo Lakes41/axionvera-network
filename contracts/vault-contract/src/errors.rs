@@ -66,6 +66,8 @@ pub enum VaultError {
     NegativeAmount = 10,
     InvalidAddress = 11,
     RewardCalculationFailed = 12,
+
+    // Additional errors
     ReentrancyDetected = 13,
     InvalidState = 14,
     ZeroRewardIncrement = 15,
@@ -133,6 +135,18 @@ impl VaultError {
             Self::ZeroRewardIncrement => ErrorInfo {
                 category: ErrorCategory::Math,
                 message: "reward distribution rounded down to zero",
+            },
+            Self::ReentrancyDetected => ErrorInfo {
+                category: ErrorCategory::State,
+                message: "reentrancy detected",
+            },
+            Self::InvalidState => ErrorInfo {
+                category: ErrorCategory::State,
+                message: "invalid contract state",
+            },
+            Self::ZeroRewardIncrement => ErrorInfo {
+                category: ErrorCategory::Math,
+                message: "reward increment is zero",
             },
         }
     }
