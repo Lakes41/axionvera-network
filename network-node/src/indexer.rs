@@ -1,60 +1,87 @@
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio_util::sync::CancellationToken;
-use tracing::{info, error, debug, warn, instrument};
-use sqlx::{Postgres, Transaction};
-use crate::stellar_service::{StellarService, Ledger};
+use tokio::time;
+use tracing::{debug, error, info, instrument};
+
 use crate::database::ConnectionPool;
-use crate::error::{NetworkError, Result};
-use serde_json::json;
+use crate::stellar_service::StellarService;
+use crate::error::NetworkError;
+
+#[derive(Debug, Serialize, Deserialize)]
+struct GetEventsRequest {
+    jsonrpc: String,
+    id: u32,
+    method: String,
+    params: GetEventsParams,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct GetEventsParams {
+    #[serde(rename = "startLedger")]
+    start_ledger: u32,
+    filters: Vec<EventFilter>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct EventFilter {
+    #[serde(rename = "type")]
+    event_type: String,
+    #[serde(rename = "contractIds")]
+    contract_ids: Vec<String>,
+    topics: Vec<Vec<String>>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct GetEventsResponse {
+    result: Option<EventsResult>,
+    error: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct EventsResult {
+    events: Vec<SorobanEvent>,
+    #[serde(rename = "latestLedger")]
+    latest_ledger: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SorobanEvent {
+    #[serde(rename = "type")]
+    event_type: String,
+    ledger: u32,
+    #[serde(rename = "contractId")]
+    contract_id: String,
+    id: String,
+    topic: Vec<String>,
+    value: SorobanEventValue,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SorobanEventValue {
+    xdr: String,
+}
 
 pub struct EventIndexer {
     stellar_service: Arc<StellarService>,
     connection_pool: ConnectionPool,
-    contract_address: String,
-    poll_interval: Duration,
+    contract_id: String,
+    polling_interval_secs: u64,
 }
 
 impl EventIndexer {
     pub fn new(
         stellar_service: Arc<StellarService>,
         connection_pool: ConnectionPool,
-        contract_address: String,
-        poll_interval_secs: u64,
+        contract_id: String,
+        polling_interval_secs: u64,
     ) -> Self {
         Self {
             stellar_service,
             connection_pool,
-            contract_address,
-            poll_interval: Duration::from_secs(poll_interval_secs),
-        }
-    }
-
-    pub async fn start(&self, shutdown_token: CancellationToken) -> Result<()> {
-        info!("Starting event indexer for contract: {}", self.contract_address);
-        
-        loop {
-            tokio::select! {
-                _ = shutdown_token.cancelled() => {
-                    info!("Event indexer received shutdown signal, stopping...");
-                    break;
-                }
-                result = self.process_next_batch() => {
-                    if let Err(e) = result {
-                        error!("Error processing event batch: {}", e);
-                        tokio::select! {
-                            _ = shutdown_token.cancelled() => break,
-                            _ = tokio::time::sleep(Duration::from_secs(5)) => {},
-                        }
-                        continue;
-                    }
-                }
-            }
-
-            tokio::select! {
-                _ = shutdown_token.cancelled() => break,
-                _ = tokio::time::sleep(self.poll_interval) => {},
-            }
+            contract_id,
+            polling_interval_secs,
         }
         
         info!("Event indexer stopped gracefully");
@@ -62,106 +89,61 @@ impl EventIndexer {
     }
 
     #[instrument(skip(self))]
-    async fn process_next_batch(&self) -> Result<()> {
-        let pool = self.connection_pool.get_pool();
+    pub async fn start(&self) -> Result<(), NetworkError> {
+        info!("Starting Soroban Event Indexer for contract: {}", self.contract_id);
         
-        // 1. Read the last processed ledger from DB
-        let last_ledger: i32 = sqlx::query_scalar("SELECT last_processed_ledger FROM indexer_state WHERE id = 1")
-            .fetch_one(pool)
-            .await
-            .map_err(|e| NetworkError::Internal(format!("Failed to fetch last ledger: {}", e)))?;
+        let client = Client::new();
+        let rpc_url = std::env::var("SOROBAN_RPC_URL").unwrap_or_else(|_| "https://soroban-testnet.stellar.org".to_string());
+        let mut interval = time::interval(Duration::from_secs(self.polling_interval_secs));
+        let mut current_ledger: u32 = 0;
 
-        // 2. Poll RPC for the latest ledger
-        let latest_ledger = self.stellar_service.get_latest_ledger().await?;
-        let latest_sequence = latest_ledger.sequence as i32;
+        loop {
+            interval.tick().await;
+            
+            let filter = EventFilter {
+                event_type: "contract".to_string(),
+                contract_ids: vec![self.contract_id.clone()],
+                topics: vec![vec!["AxionveraVault".to_string()]],
+            };
 
-        if last_ledger >= latest_sequence {
-            debug!("No new ledgers to process. Last: {}, Latest: {}", last_ledger, latest_sequence);
-            return Ok(());
+            let req_body = GetEventsRequest {
+                jsonrpc: "2.0".to_string(),
+                id: 1,
+                method: "getEvents".to_string(),
+                params: GetEventsParams {
+                    start_ledger: current_ledger,
+                    filters: vec![filter],
+                },
+            };
+
+            match client.post(&rpc_url).json(&req_body).send().await {
+                Ok(response) => {
+                    if response.status().is_success() {
+                        match response.json::<GetEventsResponse>().await {
+                            Ok(rpc_response) => {
+                                if let Some(res) = rpc_response.result {
+                                    for event in res.events {
+                                        info!(
+                                            event_id = %event.id,
+                                            ledger = event.ledger,
+                                            "Parsed AxionveraVault Soroban event"
+                                        );
+                                        // Ensure sensitive XDR is truncated/omitted from INFO logs
+                                        debug!(xdr = %event.value.xdr, "Event XDR payload");
+                                    }
+                                    current_ledger = res.latest_ledger + 1;
+                                } else if let Some(err) = rpc_response.error {
+                                    error!(error = ?err, "RPC error returned");
+                                }
+                            }
+                            Err(e) => error!("Failed to parse RPC response: {}", e),
+                        }
+                    } else {
+                        error!("RPC request failed with status: {}", response.status());
+                    }
+                }
+                Err(e) => error!("Failed to connect to Soroban RPC: {}", e),
+            }
         }
-
-        let start_ledger = last_ledger + 1;
-        let end_ledger = (start_ledger + 10).min(latest_sequence); // Process up to 10 ledgers at a time
-
-        info!("Processing ledgers from {} to {}", start_ledger, end_ledger);
-
-        for sequence in start_ledger..=end_ledger {
-            self.process_ledger(sequence as u32).await?;
-        }
-
-        Ok(())
     }
-
-    async fn process_ledger(&self, sequence: u32) -> Result<()> {
-        // In a real implementation, we would fetch events for this ledger from Horizon/Soroban RPC
-        // Since we don't have a real Soroban RPC client yet, we'll simulate finding some events
-        
-        // Simulate fetching events
-        let events = self.simulate_fetch_events(sequence).await;
-        
-        let pool = self.connection_pool.get_pool();
-        let mut tx = pool.begin().await
-            .map_err(|e| NetworkError::Internal(format!("Failed to begin transaction: {}", e)))?;
-
-        for event in events {
-            // Idempotent insert: the composite unique constraint (transaction_hash + event_index)
-            // ensures we don't double-count events if we re-process a ledger.
-            sqlx::query(
-                "INSERT INTO transactions (transaction_hash, event_index, ledger_sequence, event_type, data)
-                 VALUES ($1, $2, $3, $4, $5)
-                 ON CONFLICT (transaction_hash, event_index) DO NOTHING"
-            )
-            .bind(&event.transaction_hash)
-            .bind(event.event_index)
-            .bind(event.ledger_sequence as i32)
-            .bind(&event.event_type)
-            .bind(&event.data)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| NetworkError::Internal(format!("Failed to insert event: {}", e)))?;
-        }
-
-        // Update the cursor
-        sqlx::query("UPDATE indexer_state SET last_processed_ledger = $1, updated_at = CURRENT_TIMESTAMP WHERE id = 1")
-            .bind(sequence as i32)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| NetworkError::Internal(format!("Failed to update indexer state: {}", e)))?;
-
-        tx.commit().await
-            .map_err(|e| NetworkError::Internal(format!("Failed to commit transaction: {}", e)))?;
-
-        debug!("Successfully processed ledger {}", sequence);
-        Ok(())
-    }
-
-    async fn simulate_fetch_events(&self, sequence: u32) -> Vec<IndexedEvent> {
-        // This is a placeholder for real Soroban event fetching
-        // In a real app, you'd use Horizon or a dedicated Soroban RPC to get events
-        let mut events = Vec::new();
-        
-        // Only "find" events occasionally for simulation
-        if sequence % 5 == 0 {
-            events.push(IndexedEvent {
-                transaction_hash: format!("tx_{:x}", fastrand::u128(..)),
-                event_index: 0,
-                ledger_sequence: sequence,
-                event_type: "Deposit".to_string(),
-                data: json!({
-                    "user": "GB..." ,
-                    "amount": "1000"
-                }),
-            });
-        }
-        
-        events
-    }
-}
-
-struct IndexedEvent {
-    transaction_hash: String,
-    event_index: i32,
-    ledger_sequence: u32,
-    event_type: String,
-    data: serde_json::Value,
 }

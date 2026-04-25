@@ -32,6 +32,7 @@ pub mod grpc;
 pub mod horizon_client;
 pub mod indexer;
 pub mod metrics;
+pub mod pb;
 pub mod p2p;
 pub mod rate_limiter;
 pub mod shutdown;

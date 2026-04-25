@@ -86,6 +86,21 @@ impl ConnectionPool {
         .await
         .map_err(|e| crate::error::NetworkError::Database(DatabaseError::QueryFailed(e.to_string())))?;
 
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS deposits (
+                id SERIAL PRIMARY KEY,
+                user_address TEXT NOT NULL,
+                token_address TEXT NOT NULL,
+                amount NUMERIC NOT NULL,
+                transaction_hash TEXT,
+                ledger_sequence INTEGER,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            )"
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| crate::error::NetworkError::Database(DatabaseError::QueryFailed(e.to_string())))?;
+
         info!("Database schema initialized successfully");
         Ok(())
     }

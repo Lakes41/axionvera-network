@@ -1,14 +1,17 @@
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
-import { GenericContainer, Wait } from 'testcontainers';
+import { GenericContainer, Wait, Network } from 'testcontainers';
 import { execSync } from 'child_process';
 
 let postgresContainer: any;
 let networkNodeContainer: any;
+let network: any;
 
 export async function setup() {
   console.log('🚀 Starting integration test environment...');
   
   try {
+    network = await new Network().start();
+
     // Start PostgreSQL container
     console.log('📦 Starting PostgreSQL container...');
     postgresContainer = await new PostgreSqlContainer('postgres:15-alpine')
@@ -16,6 +19,8 @@ export async function setup() {
       .withUsername('testuser')
       .withPassword('testpass')
       .withExposedPorts(5432)
+      .withNetwork(network)
+      .withNetworkAliases('postgres')
       .start();
     
     const dbHost = postgresContainer.getHost();
@@ -29,9 +34,32 @@ export async function setup() {
     process.env.TEST_POSTGRES_HOST = dbHost;
     process.env.TEST_POSTGRES_PORT = dbPort.toString();
     
-    // Optionally start network-node container if needed
-    // For now, we'll test against the locally built binary
+    // Start network-node container
+    console.log('📦 Starting network-node container...');
+    const nodeBuilder = await GenericContainer.fromDockerfile('./network-node');
+    networkNodeContainer = await nodeBuilder
+      .build()
+      .then((c) =>
+        c
+          .withExposedPorts(50051, 9090)
+          .withNetwork(network)
+          .withEnvironment({
+            DATABASE_URL: 'postgresql://testuser:testpass@postgres:5432/testdb',
+            RUST_LOG: 'info',
+          })
+          .withWaitStrategy(Wait.forLogMessage(/gRPC server listening on/))
+          .start()
+      );
     
+    const nodeHost = networkNodeContainer.getHost();
+    const nodePort = networkNodeContainer.getMappedPort(50051);
+    const metricsPort = networkNodeContainer.getMappedPort(9090);
+    
+    process.env.TEST_NODE_HOST = nodeHost;
+    process.env.TEST_NODE_PORT = nodePort.toString();
+    process.env.TEST_METRICS_PORT = metricsPort.toString();
+    
+    console.log(`✅ Network node started on ${nodeHost}:${nodePort}`);
     console.log('✅ Integration test environment ready');
   } catch (error) {
     console.error('❌ Failed to setup integration test environment:', error);
@@ -56,6 +84,12 @@ export async function teardown() {
       await networkNodeContainer.stop({ timeout: 10000 });
       console.log('✅ Network-node container stopped');
     }
+
+    if (network) {
+      console.log('⏹️  Stopping test network...');
+      await network.stop();
+      console.log('✅ Test network stopped');
+    }
     
     // Clean up any dangling containers and volumes
     console.log('🧹 Cleaning up Docker resources...');
@@ -74,7 +108,9 @@ export async function teardown() {
   }
 }
 
-export default {
-  setup,
-  teardown,
-};
+export default async function () {
+  await setup();
+  return async () => {
+    await teardown();
+  };
+}

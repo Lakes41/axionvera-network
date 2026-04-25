@@ -1,0 +1,50 @@
+syntax = "proto3";
+
+package vault;
+
+import "google/protobuf/timestamp.proto";
+
+service VaultService {
+  rpc GetTVL(GetTVLRequest) returns (GetTVLResponse);
+  rpc GetUserBalance(GetUserBalanceRequest) returns (GetUserBalanceResponse);
+  rpc GetTransactionHistory(GetTransactionHistoryRequest) returns (GetTransactionHistoryResponse);
+  rpc GetRewardIndex(GetRewardIndexRequest) returns (GetRewardIndexResponse);
+}
+
+message GetTVLRequest {}
+
+message GetTVLResponse {
+  string tvl = 1;
+}
+
+message GetUserBalanceRequest {
+  string public_key = 1;
+}
+
+message GetUserBalanceResponse {
+  string balance = 1;
+}
+
+message GetTransactionHistoryRequest {
+  string public_key = 1;
+  int32 limit = 2;
+  string cursor = 3;
+}
+
+message Transaction {
+  string id = 1;
+  string type = 2; // deposit, withdrawal, claim
+  string amount = 3;
+  google.protobuf.Timestamp timestamp = 4;
+}
+
+message GetTransactionHistoryResponse {
+  repeated Transaction transactions = 1;
+  string next_cursor = 2;
+}
+
+message GetRewardIndexRequest {}
+
+message GetRewardIndexResponse {
+  string reward_index = 1;
+}

@@ -79,13 +79,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
 
-<<<<<<< HEAD
-    info!("Server shut down gracefully");
-    
-=======
     info!("Network node shutdown complete");
 
->>>>>>> 54afbe1abe8ecda91c8fe5648c543cb48d0fe8b1
+
+    info!("Network node shutdown complete");
+
+
     // Shutdown OpenTelemetry tracer provider
     telemetry::shutdown_tracer();
 

@@ -1,9 +1,5 @@
 use soroban_sdk::contracterror;
 
-// ---------------------------------------------------------------------------
-// Error categories – used by `ErrorInfo` for structured diagnostics.
-// ---------------------------------------------------------------------------
-
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum ErrorCategory {
     Authorization,
@@ -13,25 +9,17 @@ pub enum ErrorCategory {
     Validation,
 }
 
-/// Rich metadata attached to every [`VaultError`] variant so that callers
-/// (and off-chain tooling) can inspect *why* a transaction failed.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct ErrorInfo {
     pub category: ErrorCategory,
     pub message: &'static str,
 }
 
-// ---------------------------------------------------------------------------
-// Domain-specific sub-error types.
-//
-// These give call-sites fine-grained variants that are then converted into the
-// single on-chain [`VaultError`] via the `From` impls at the bottom.
-// ---------------------------------------------------------------------------
-
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum StateError {
     AlreadyInitialized,
     NotInitialized,
+    InvalidState,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -53,47 +41,37 @@ pub enum BalanceError {
 pub enum ArithmeticError {
     Overflow,
     RewardCalculationFailed,
+    ZeroRewardIncrement,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum AuthorizationError {
     Unauthorized,
+    ReentrancyDetected,
 }
-
-// ---------------------------------------------------------------------------
-// On-chain error enum – discriminants map to `u32` codes returned to callers.
-// ---------------------------------------------------------------------------
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(u32)]
 pub enum VaultError {
-    // State errors (1–2)
     AlreadyInitialized = 1,
     NotInitialized = 2,
-
-    // Authorization errors (3)
     Unauthorized = 3,
-
-    // Validation errors (4, 10–11)
     InvalidAmount = 4,
+    InsufficientBalance = 5,
+    MathOverflow = 6,
+    NoDeposits = 7,
+    InvalidTokenConfiguration = 8,
+    InsufficientContractBalance = 9,
     NegativeAmount = 10,
     InvalidAddress = 11,
-    InvalidTokenConfiguration = 8,
-
-    // Balance errors (5, 7, 9)
-    InsufficientBalance = 5,
-    NoDeposits = 7,
-    InsufficientContractBalance = 9,
-
-    // Arithmetic errors (6, 12)
-    MathOverflow = 6,
     RewardCalculationFailed = 12,
-}
 
-// ---------------------------------------------------------------------------
-// Descriptive metadata for every variant.
-// ---------------------------------------------------------------------------
+    // Additional errors
+    ReentrancyDetected = 13,
+    InvalidState = 14,
+    ZeroRewardIncrement = 15,
+}
 
 impl VaultError {
     pub const fn info(self) -> ErrorInfo {
@@ -114,6 +92,26 @@ impl VaultError {
                 category: ErrorCategory::Validation,
                 message: "amount must be greater than zero",
             },
+            Self::InsufficientBalance => ErrorInfo {
+                category: ErrorCategory::Balance,
+                message: "available balance is lower than the requested amount",
+            },
+            Self::MathOverflow => ErrorInfo {
+                category: ErrorCategory::Math,
+                message: "arithmetic overflow or underflow detected",
+            },
+            Self::NoDeposits => ErrorInfo {
+                category: ErrorCategory::Balance,
+                message: "reward distribution requires at least one active deposit",
+            },
+            Self::InvalidTokenConfiguration => ErrorInfo {
+                category: ErrorCategory::Validation,
+                message: "deposit and reward token addresses must be different",
+            },
+            Self::InsufficientContractBalance => ErrorInfo {
+                category: ErrorCategory::Balance,
+                message: "vault token balance is lower than the requested amount",
+            },
             Self::NegativeAmount => ErrorInfo {
                 category: ErrorCategory::Validation,
                 message: "amount must not be negative",
@@ -122,29 +120,33 @@ impl VaultError {
                 category: ErrorCategory::Validation,
                 message: "provided address is invalid",
             },
-            Self::InvalidTokenConfiguration => ErrorInfo {
-                category: ErrorCategory::Validation,
-                message: "deposit and reward token addresses must be different",
-            },
-            Self::InsufficientBalance => ErrorInfo {
-                category: ErrorCategory::Balance,
-                message: "available balance is lower than the requested amount",
-            },
-            Self::NoDeposits => ErrorInfo {
-                category: ErrorCategory::Balance,
-                message: "reward distribution requires at least one active deposit",
-            },
-            Self::InsufficientContractBalance => ErrorInfo {
-                category: ErrorCategory::Balance,
-                message: "vault token balance is lower than the requested amount",
-            },
-            Self::MathOverflow => ErrorInfo {
-                category: ErrorCategory::Math,
-                message: "arithmetic overflow or underflow detected",
-            },
             Self::RewardCalculationFailed => ErrorInfo {
                 category: ErrorCategory::Math,
-                message: "reward calculation failed due to arithmetic error",
+                message: "reward calculation failed due to checked arithmetic",
+            },
+            Self::ReentrancyDetected => ErrorInfo {
+                category: ErrorCategory::Authorization,
+                message: "reentrant contract call detected",
+            },
+            Self::InvalidState => ErrorInfo {
+                category: ErrorCategory::State,
+                message: "vault state is internally inconsistent",
+            },
+            Self::ZeroRewardIncrement => ErrorInfo {
+                category: ErrorCategory::Math,
+                message: "reward distribution rounded down to zero",
+            },
+            Self::ReentrancyDetected => ErrorInfo {
+                category: ErrorCategory::State,
+                message: "reentrancy detected",
+            },
+            Self::InvalidState => ErrorInfo {
+                category: ErrorCategory::State,
+                message: "invalid contract state",
+            },
+            Self::ZeroRewardIncrement => ErrorInfo {
+                category: ErrorCategory::Math,
+                message: "reward increment is zero",
             },
         }
     }
@@ -157,10 +159,6 @@ impl VaultError {
         self.info().message
     }
 }
-
-// ---------------------------------------------------------------------------
-// Display – human-readable formatting for off-chain / logging use.
-// ---------------------------------------------------------------------------
 
 impl core::fmt::Display for VaultError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -175,15 +173,12 @@ impl core::fmt::Display for ErrorCategory {
     }
 }
 
-// ---------------------------------------------------------------------------
-// `From` conversions – domain sub-errors ⟶ `VaultError`.
-// ---------------------------------------------------------------------------
-
 impl From<StateError> for VaultError {
     fn from(error: StateError) -> Self {
         match error {
             StateError::AlreadyInitialized => Self::AlreadyInitialized,
             StateError::NotInitialized => Self::NotInitialized,
+            StateError::InvalidState => Self::InvalidState,
         }
     }
 }
@@ -214,6 +209,7 @@ impl From<ArithmeticError> for VaultError {
         match error {
             ArithmeticError::Overflow => Self::MathOverflow,
             ArithmeticError::RewardCalculationFailed => Self::RewardCalculationFailed,
+            ArithmeticError::ZeroRewardIncrement => Self::ZeroRewardIncrement,
         }
     }
 }
@@ -222,10 +218,7 @@ impl From<AuthorizationError> for VaultError {
     fn from(error: AuthorizationError) -> Self {
         match error {
             AuthorizationError::Unauthorized => Self::Unauthorized,
+            AuthorizationError::ReentrancyDetected => Self::ReentrancyDetected,
         }
     }
-    InvalidConfiguration = 8,
-    ReentrancyDetected = 9,
-    InvalidState = 10,
-    ZeroRewardIncrement = 11,
 }

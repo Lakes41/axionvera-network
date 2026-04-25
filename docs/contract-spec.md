@@ -45,6 +45,125 @@ When a user interacts, the contract compares:
 
 The difference tells the contract how much new reward has accrued since the user's last interaction.
 
+## Reward Accounting Logic
+
+This section documents the critical "snapshot" mechanism that prevents reward stealing attacks in the index-based reward model.
+
+### The Problem: Reward Stealing Attack
+
+In an index-based reward system, if a user's balance changes without updating their `reward_index`, they can claim rewards they didn't earn. For example:
+
+1. Global `reward_index` = 100
+2. User deposits 1000 tokens (their `reward_index` = 100)
+3. Admin distributes rewards, global `reward_index` = 200
+4. User withdraws 1000 tokens **without updating their index**
+5. User's pending rewards = 1000 × (200 - 100) / 1e18 = rewards they didn't earn
+
+### The Solution: Snapshot Before Balance Change
+
+The contract prevents this by **accruing rewards before any balance change**:
+
+#### Deposit Flow
+
+```
+1. User calls deposit(amount)
+2. Contract calculates pending rewards based on OLD balance
+3. Contract stores accrued rewards in user_rewards
+4. Contract updates user_reward_index to current global_reward_index
+5. Contract increases user_balance by amount
+6. Contract increases total_deposits by amount
+```
+
+**Why this order matters**: The user receives rewards only for the balance they held up to this point. The new deposit doesn't retroactively earn rewards.
+
+#### Withdraw Flow
+
+```
+1. User calls withdraw(amount)
+2. Contract calculates pending rewards based on OLD balance
+3. Contract stores accrued rewards in user_rewards
+4. Contract updates user_reward_index to current global_reward_index
+5. Contract decreases user_balance by amount
+6. Contract decreases total_deposits by amount
+```
+
+**Why this order matters**: The user receives rewards for their full balance up to withdrawal. After withdrawal, they can't claim rewards on the withdrawn amount.
+
+#### Claim Flow
+
+```
+1. User calls claim_rewards()
+2. Contract calculates pending rewards based on CURRENT balance
+3. Contract updates user_reward_index to current global_reward_index
+4. Contract resets user_rewards to 0
+5. Contract transfers accumulated rewards to user
+```
+
+### Mathematical Verification
+
+For a user with balance B and reward indices:
+
+- `user_index` = last synced global index
+- `global_index` = current global index
+
+**Accrued rewards** = B × (global_index - user_index) / 1e18
+
+This formula is applied **before** any balance change, ensuring:
+
+- Rewards are calculated on the balance that earned them
+- The index snapshot prevents double-counting
+- Users cannot claim rewards for balances they don't hold
+
+### Code Implementation
+
+The core logic is in `storage.rs`:
+
+```rust
+fn accrue_position_rewards(
+    state: &VaultState,
+    position: &mut UserPosition,
+) -> Result<(), VaultError> {
+    if state.reward_index == position.reward_index {
+        return Ok(()); // No new rewards
+    }
+
+    if position.balance > 0 {
+        let delta = state.reward_index - position.reward_index;
+        let accrued = position.balance * delta / REWARD_INDEX_SCALE;
+
+        if accrued > 0 {
+            position.rewards += accrued;
+        }
+    }
+
+    position.reward_index = state.reward_index; // Snapshot the index
+    Ok(())
+}
+```
+
+This function is called in:
+
+- `store_deposit()` - before increasing balance
+- `store_withdraw()` - before decreasing balance
+- `store_claimable_rewards()` - before transferring rewards
+
+### Test Coverage
+
+The following tests verify this logic:
+
+- `test_rewards_are_proportional_and_claimable` - Multiple users receive proportional rewards
+- `test_reward_proportionality_with_unequal_deposits` - 1:2:3 deposit ratio yields 1:2:3 reward ratio
+- `test_multiple_reward_distributions_accumulate` - Multiple distributions compound correctly
+- `test_deposit_after_reward_distribution` - New depositors don't retroactively earn old rewards
+- `test_reward_accrual_on_deposit_withdrawal_sequence` - Complex sequences maintain invariants
+
+### Security Guarantees
+
+1. **No Reward Stealing**: Users cannot claim rewards for balances they don't hold
+2. **No Double-Counting**: Each reward is counted exactly once per user
+3. **Atomic Updates**: Balance and index are always updated together
+4. **Reentrancy Safe**: All state mutations happen within reentrancy guards
+
 ## Public Functions
 
 ### `version() -> u32`
@@ -52,6 +171,7 @@ The difference tells the contract how much new reward has accrued since the user
 Returns the contract version.
 
 Why it exists:
+
 - useful for integrations, upgrades, and quick sanity checks after deployment
 
 Example:
@@ -66,6 +186,7 @@ assert_eq!(version, 1);
 Performs one-time setup for the contract.
 
 What it does:
+
 - stores the admin address
 - stores the deposit token address
 - stores the reward token address
@@ -73,10 +194,11 @@ What it does:
 - emits an `init` event
 
 Security:
+
 - Fails with `AlreadyInitialized` if called twice.
 - Fails with `InvalidTokenConfiguration` if `deposit_token == reward_token`.
 - Requires `admin` authorization.
-Important rules:
+  Important rules:
 - can only run once
 - requires `admin` authorization
 
@@ -91,14 +213,16 @@ vault.initialize(&admin, &deposit_token_id, &reward_token_id);
 Moves deposit tokens from the user into the vault and increases their recorded vault balance.
 
 Validations:
+
 - `amount > 0`
 - Requires `from` authorization
 - Fails with `InsufficientBalance` if `from` does not hold enough `deposit_token`
 
 Accounting:
+
 - Accrues any pending rewards for `from` before changing their balance.
 - Rejects invalid transfers before mutating user reward snapshots or vault balances.
-Step-by-step:
+  Step-by-step:
 
 1. Confirms the contract is initialized.
 2. Validates `amount > 0`.
@@ -110,6 +234,7 @@ Step-by-step:
 8. Emits a `deposit` event.
 
 Why reward accrual happens first:
+
 - the user should receive rewards based on their old balance up to this point in time
 - only after that should the new deposit affect future distributions
 
@@ -128,14 +253,17 @@ Moves deposit tokens from the vault back to the user and reduces their recorded 
 Step-by-step:
 
 Validations:
+
 - `amount > 0`
 - Requires `to` authorization
 - Fails with `InsufficientBalance` if `amount > balance(to)`
 - Fails with `InsufficientContractBalance` if the vault cannot cover the token transfer
 
 Accounting:
+
 - Accrues any pending rewards for `to` before changing their balance.
 - Final state is only written after token transfer pre-checks succeed.
+
 1. Confirms the contract is initialized.
 2. Validates `amount > 0`.
 3. Requires authorization from `to`.
@@ -147,6 +275,7 @@ Accounting:
 9. Emits a `withdraw` event.
 
 Fails when:
+
 - the amount is zero or negative
 - the user tries to withdraw more than their balance
 
@@ -160,6 +289,8 @@ assert_eq!(vault.balance(&user), 250);
 assert_eq!(vault.total_deposits(), 250);
 ```
 
+**Exit Liquidity Guarantee**: This function is **isolated from reward claiming**. It handles only the deposit token and never touches the reward token. This ensures users can always withdraw their deposits even if the reward token contract fails or is paused.
+
 ### `distribute_rewards(amount) -> Result<i128, VaultError>`
 
 Transfers reward tokens from the admin into the contract and updates the global reward index.
@@ -167,10 +298,12 @@ Transfers reward tokens from the admin into the contract and updates the global 
 Step-by-step:
 
 Validations:
+
 - `amount > 0`
 - Requires `admin` authorization
 - Fails with `NoDeposits` if `total_deposits == 0`
 - Fails with `InsufficientBalance` if `admin` does not hold enough `reward_token`
+
 1. Confirms the contract is initialized.
 2. Validates `amount > 0`.
 3. Requires admin authorization.
@@ -182,6 +315,7 @@ Validations:
 9. Returns the new `reward_index`.
 
 Important behavior:
+
 - this does not immediately transfer rewards to users
 - it only updates global accounting so users can realize rewards later
 
@@ -208,14 +342,36 @@ Step-by-step:
 8. Emits a `claim` event when a transfer happens.
 
 Validations:
+
 - Requires `user` authorization
 - Fails with `InsufficientContractBalance` if the vault reward pool is underfunded
+
+**Isolation from Withdrawals**: This function is **completely separate from withdraw**. Users must call `claim_rewards` explicitly to receive their rewards. This design ensures:
+
+1. **Exit Liquidity**: Users can always withdraw deposits via `withdraw()` even if reward claiming fails
+2. **Reward Token Independence**: Failures in the reward token contract don't block deposit withdrawals
+3. **Explicit Intent**: Users must actively claim rewards; they're not automatically bundled with withdrawals
+
 Example:
 
 ```rust
 let claimed = vault.claim_rewards(&user);
 assert!(claimed >= 0);
 ```
+
+**Recommended Usage Pattern**:
+
+```rust
+// Step 1: Withdraw deposits (always works)
+vault.withdraw(&user, &amount);
+
+// Step 2: Claim rewards separately (may fail if reward token has issues)
+let rewards = vault.claim_rewards(&user);
+```
+
+This separation prioritizes **exit liquidity** over yield mechanics, ensuring users can always access their principal.
+
+````
 
 ### `balance(user) -> Result<i128, VaultError>`
 
@@ -237,7 +393,7 @@ Example:
 
 ```rust
 let pending = vault.pending_rewards(&user);
-```
+````
 
 ### `admin() -> Result<Address, VaultError>`
 
@@ -258,6 +414,7 @@ The contract emits structured events for important state changes.
 ### `init`
 
 Fields:
+
 - `admin`
 - `deposit_token`
 - `reward_token`
@@ -266,6 +423,7 @@ Fields:
 ### `deposit`
 
 Fields:
+
 - `user`
 - `amount`
 - `new_balance`
@@ -274,6 +432,7 @@ Fields:
 ### `withdraw`
 
 Fields:
+
 - `user`
 - `amount`
 - `new_balance`
@@ -282,6 +441,7 @@ Fields:
 ### `distrib`
 
 Fields:
+
 - `caller`
 - `amount`
 - `reward_index`
@@ -290,6 +450,7 @@ Fields:
 ### `claim`
 
 Fields:
+
 - `user`
 - `amount`
 - `timestamp`
@@ -304,7 +465,7 @@ Fields:
 - `InvalidTokenConfiguration`: deposit and reward token addresses must be different.
 - `InsufficientContractBalance`: the vault does not hold enough tokens to complete the transfer.
 - `MathOverflow`: arithmetic overflow or underflow was detected while updating accounting.
-The contract can return the following errors from [errors.rs](/c:/Users/ADMIN/Desktop/remmy-drips/axionvera-network/contracts/vault-contract/src/errors.rs):
+  The contract can return the following errors from [errors.rs](/c:/Users/ADMIN/Desktop/remmy-drips/axionvera-network/contracts/vault-contract/src/errors.rs):
 
 - `AlreadyInitialized`
 - `NotInitialized`
