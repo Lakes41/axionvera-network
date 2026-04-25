@@ -11,8 +11,9 @@ use crate::database::ConnectionPool;
 use crate::error::NetworkError;
 use crate::signing::SigningService;
 use crate::grpc::{
-    NetworkServiceImpl, GatewayServiceImpl, HealthServiceImpl, P2PServiceImpl,
+    NetworkServiceImpl, GatewayServiceImpl, HealthServiceImpl, P2PServiceImpl, VaultServiceImpl,
     network::network_service_server::NetworkServiceServer,
+    network::vault_service_server::VaultServiceServer,
     network::health_service_server::HealthServiceServer,
     network::p2p_service_server::P2PServiceServer,
     gateway::gateway_service_server::GatewayServiceServer,
@@ -92,6 +93,7 @@ impl GrpcServer {
 
         let health_service = HealthServiceImpl::new(self.connection_pool.clone());
         let p2p_service = P2PServiceImpl::new(self.p2p_manager.clone());
+        let vault_service = VaultServiceImpl::new(self.connection_pool.clone());
 
         // Build the gRPC server with middleware
         let mut server = Server::builder()
@@ -102,6 +104,10 @@ impl GrpcServer {
             .add_service(
                 GatewayServiceServer::new(gateway_service)
                     .max_decoding_message_size(4 * 1024 * 1024)
+            )
+            .add_service(
+                VaultServiceServer::new(vault_service)
+                    .max_decoding_message_size(1024 * 1024)
             )
             .add_service(
                 HealthServiceServer::new(health_service)

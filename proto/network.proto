@@ -32,6 +32,11 @@ service NetworkService {
   rpc ListPendingParameterUpgrades(google.protobuf.Empty) returns (PendingParameterUpgradesResponse);
 }
 
+// Vault service for vault-specific aggregate queries.
+service VaultService {
+  rpc GetTVL(GetTvlRequest) returns (GetTvlResponse);
+}
+
 // P2P network service for peer-to-peer communication
 service P2PService {
   rpc ConnectToPeer(PeerConnectionRequest) returns (PeerConnectionResponse);
@@ -127,6 +132,12 @@ message ContractStateResponse {
   uint64 total_users = 4;
   google.protobuf.Timestamp last_updated = 5;
   map<string, string> custom_state = 6;
+}
+
+message GetTvlRequest {}
+
+message GetTvlResponse {
+  string tvl = 1;
 }
 
 // Network status messages
